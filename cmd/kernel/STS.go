@@ -99,15 +99,28 @@ func obtenerCPUDisponible() (string, *utils.HTTPClient) {
 
 // PlanificarCortoPlazo gestiona transición de procesos entre READY y EXEC
 func PlanificarCortoPlazo() {
+	// Recuperación de pánico para diagnóstico
+	defer func() {
+		if r := recover(); r != nil {
+			utils.ErrorLog.Error("PÁNICO EN PLANIFICADOR DE CORTO PLAZO", "error", r)
+			// Re-panic para terminar el programa y mostrar el stack trace
+			panic(r)
+		}
+	}()
+
+	utils.InfoLog.Info("STS: Iniciando Planificador de Corto Plazo...")
+
 	for {
+		utils.InfoLog.Debug("STS: Esperando procesos en READY...")
 		readyMutex.Lock()
 		for len(colaReady) == 0 {
 			condReady.Wait()
 		}
+		utils.InfoLog.Info("STS: Proceso detectado en READY, procediendo a seleccionar...", "procesos_en_ready", len(colaReady))
 
 		// Seleccionar próximo proceso según algoritmo
 		pcb := seleccionarProcesoSTS()
-		
+
 		// Si SRT decide desalojar, pcb será nil. El planificador se re-ejecutará
 		if pcb == nil {
 			readyMutex.Unlock()
@@ -120,17 +133,19 @@ func PlanificarCortoPlazo() {
 		// Bucle para esperar una CPU disponible
 		var nombreCPU string
 		var cpuClient *utils.HTTPClient
-		
+
+		utils.InfoLog.Debug("STS: Buscando CPU disponible...")
 		for {
-			execMutex.Lock()
 			nombreCPU, cpuClient = obtenerCPUDisponibleParaEjecucion()
 			if cpuClient != nil {
-				// CPU encontrada y reservada lógicamente
-				colaExec[nombreCPU] = pcb 
+				// CPU encontrada. Reservarla.
+				execMutex.Lock()
+				colaExec[nombreCPU] = pcb
 				execMutex.Unlock()
+				utils.InfoLog.Debug("STS: CPU encontrada y reservada", "nombre", nombreCPU)
 				break
 			}
-			execMutex.Unlock()
+			utils.InfoLog.Warn("STS: No hay CPU disponible, reintentando en 200ms...")
 			time.Sleep(200 * time.Millisecond) // Esperar antes de volver a verificar
 		}
 
@@ -141,25 +156,74 @@ func PlanificarCortoPlazo() {
 
 		// Asignar a CPU
 		pcb.CambiarEstado(EstadoExec)
-		
+
 		utils.InfoLog.Info(fmt.Sprintf("Proceso despachado a CPU %s", nombreCPU), "pid", pcb.PID)
 
-		// Enviar a CPU (comunicación real)
-		go enviarProcesoACPU(nombreCPU, cpuClient, pcb)
+		// Enviar a CPU y procesar su ciclo de ejecución de forma síncrona en una goroutine
+		go despacharYProcesarCPU(nombreCPU, cpuClient, pcb)
 	}
 }
 
-// obtenerCPUDisponibleParaEjecucion busca una CPU que no esté en la cola de ejecución.
-// ¡IMPORTANTE! Esta función debe ser llamada con el mutex de colaExec BLOQUEADO.
-func obtenerCPUDisponibleParaEjecucion() (string, *utils.HTTPClient) {
-	cpuClientsMutex.Lock()
-	defer cpuClientsMutex.Unlock()
+// despacharYProcesarCPU se encarga del ciclo de vida de un proceso en la CPU
+func despacharYProcesarCPU(nombreCPU string, cpuClient *utils.HTTPClient, pcb *PCB) {
+	// Liberar la CPU al final de la ejecución, sin importar cómo termine
+	defer func() {
+		execMutex.Lock()
+		delete(colaExec, nombreCPU)
+		execMutex.Unlock()
+		utils.InfoLog.Info(fmt.Sprintf("CPU %s liberada", nombreCPU), "pid", pcb.PID)
+	}()
 
-	for nombre, cliente := range cpuClients {
-		if _, ocupada := colaExec[nombre]; !ocupada {
-			return nombre, cliente
+	// Llamada síncrona a la CPU
+	fueExitoso := EnviarProcesoCPU(pcb, nombreCPU)
+
+	// Si la comunicación falló o la CPU reportó un error, el proceso no se procesó.
+	// El manejador de la respuesta en EnviarProcesoCPU ya se encargó del estado del PCB.
+	if !fueExitoso {
+		utils.ErrorLog.Error("El ciclo de ejecución en CPU falló. El proceso podría haber sido movido a READY o EXIT.", "pid", pcb.PID, "cpu", nombreCPU)
+		// Si la comunicación falló, EnviarProcesoCPU lo mueve a READY.
+		// Si la CPU retornó error, el handler de la respuesta lo mueve a EXIT.
+		// En cualquier caso, el proceso ya no está en EXEC, pero debemos asegurarnos.
+		if pcb.Estado == EstadoExec {
+			utils.InfoLog.Warn("El proceso seguía en estado EXEC después de un fallo. Forzando a READY.", "pid", pcb.PID)
+			MoverProcesoAReady(pcb)
 		}
 	}
+	// Si fue exitoso, el proceso ya fue transicionado a otro estado (Blocked, Exit, etc)
+	// por la función EnviarProcesoCPU.
+}
+
+// obtenerCPUDisponibleParaEjecucion busca una CPU que no esté en la cola de ejecución.
+// Esta función ahora es segura para ser llamada sin un bloqueo externo en execMutex.
+func obtenerCPUDisponibleParaEjecucion() (string, *utils.HTTPClient) {
+	// 1. Obtener una lista de todas las CPUs registradas (lectura segura)
+	cpuClientsMutex.Lock()
+	cpusDisponibles := make(map[string]*utils.HTTPClient)
+	for nombre, cliente := range cpuClients {
+		cpusDisponibles[nombre] = cliente
+	}
+	cpuClientsMutex.Unlock()
+
+	if len(cpusDisponibles) == 0 {
+		if time.Since(ultimoLogCPUNoDisponible) > 5*time.Second {
+			utils.InfoLog.Warn("No hay CPUs registradas en el sistema.")
+			ultimoLogCPUNoDisponible = time.Now()
+		}
+		return "", nil
+	}
+
+	// 2. Verificar cuáles de ellas no están en la cola de ejecución (lectura segura)
+	execMutex.Lock()
+	defer execMutex.Unlock()
+
+	for nombre, cliente := range cpusDisponibles {
+		if _, ocupada := colaExec[nombre]; !ocupada {
+			utils.InfoLog.Debug("STS: Se encontró CPU libre", "nombre", nombre)
+			return nombre, cliente // Encontramos una CPU libre
+		}
+	}
+
+	// 3. Si llegamos aquí, todas las CPUs registradas están ocupadas.
 	return "", nil
 }
 
@@ -238,7 +302,7 @@ func seleccionarSRT() *PCB {
 		go desalojarProcesoActual(procesoADesalojar)
 		return nil
 	}
-	
+
 	return mejorCandidatoReady
 }
 
@@ -314,37 +378,13 @@ func desalojarProcesoActual(pcb *PCB) {
 	}
 }
 
-// enviarProcesoACPU envía realmente un proceso a la CPU mediante API
-func enviarProcesoACPU(nombreCPU string, cpuClient *utils.HTTPClient, pcb *PCB) {
-	utils.InfoLog.Info(fmt.Sprintf("Enviando proceso a CPU %s", nombreCPU), "pid", pcb.PID, "pc", pcb.PC)
-
-	// Preparar datos para CPU
-	datos := map[string]interface{}{
-		"pid":       pcb.PID,
-		"pc":        pcb.PC,
-		"operacion": "EJECUTAR_PROCESO",
-	}
-
-	// Enviar solicitud a CPU y no esperar respuesta (se manejará en el handler)
-	_, err := cpuClient.EnviarHTTPOperacion("EJECUTAR_PROCESO", datos)
-	if err != nil {
-		utils.ErrorLog.Error(fmt.Sprintf("Error al enviar proceso a CPU %s", nombreCPU),
-			"pid", pcb.PID,
-			"error", err.Error())
-
-		// Si falla el envío, el proceso debe volver a READY y la CPU liberarse
-		execMutex.Lock()
-		delete(colaExec, nombreCPU)
-		execMutex.Unlock()
-
-		MoverProcesoAReady(pcb)
-	}
-}
-
 // EnviarProcesoCPU envía un PCB a la CPU para su ejecución
 func EnviarProcesoCPU(pcb *PCB, nombreCPU string) bool {
 	// Obtener cliente para esta CPU
+	cpuClientsMutex.Lock()
 	cpuClient, existe := cpuClients[nombreCPU]
+	cpuClientsMutex.Unlock()
+
 	if !existe {
 		utils.ErrorLog.Error("CPU no encontrada", "cpu_id", nombreCPU)
 		return false
@@ -361,11 +401,15 @@ func EnviarProcesoCPU(pcb *PCB, nombreCPU string) bool {
 		"pc", pcb.PC, "cpu", nombreCPU)
 
 	// Enviar solicitud a la CPU
-	respuesta, err := cpuClient.EnviarHTTPOperacion("EJECUTAR", datos)
+	respuesta, err := cpuClient.EnviarHTTPOperacion("EJECUTAR_PROCESO", datos)
 	if err != nil {
 		utils.ErrorLog.Error("Error enviando proceso a CPU",
 			"pid", pcb.PID,
 			"error", err.Error())
+
+		// Devolver proceso a READY si falla la comunicación
+		MoverProcesoAReady(pcb)
+
 		return false
 	}
 

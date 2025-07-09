@@ -72,8 +72,8 @@ func manejarRegistroCPU(origen string, datos map[string]interface{}) (interface{
 		identificadorCPU = id
 	}
 
-	// Registro asíncrono para mejor rendimiento
-	go registrarCPU(identificadorCPU, ip, puerto)
+	// El registro DEBE ser síncrono para evitar race conditions con el planificador.
+	registrarCPU(identificadorCPU, ip, puerto)
 
 	// Log original mantenido exactamente igual
 	utils.InfoLog.Info(fmt.Sprintf("CPU %s registrada", identificadorCPU), "ip", ip, "puerto", puerto)

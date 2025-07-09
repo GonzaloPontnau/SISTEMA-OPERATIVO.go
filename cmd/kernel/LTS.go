@@ -14,6 +14,17 @@ const (
 
 // PlanificarLargoPlazo optimizado
 func PlanificarLargoPlazo() {
+	// Recuperación de pánico para diagnóstico
+	defer func() {
+		if r := recover(); r != nil {
+			utils.ErrorLog.Error("PÁNICO EN PLANIFICADOR DE LARGO PLAZO", "error", r)
+			// Re-panic para terminar el programa y mostrar el stack trace
+			panic(r)
+		}
+	}()
+
+	utils.InfoLog.Info("LTS: Iniciando Planificador de Largo Plazo...")
+
 	for {
 		var pcb *PCB
 
@@ -33,6 +44,7 @@ func PlanificarLargoPlazo() {
 				colaReady = append(colaReady, pcb)
 				readyMutex.Unlock()
 				condReady.Signal()
+				utils.InfoLog.Info("LTS: Señal enviada al STS para proceso", "pid", pcb.PID)
 				continue
 			} else {
 				// Si falla el desswap, devolver el proceso a SUSP.READY y liberar semáforo
@@ -62,12 +74,16 @@ func PlanificarLargoPlazo() {
 		// --- CASO ESPECIAL PARA EL PROCESO INICIAL (PID 0) ---
 		if pcb.PID == 0 {
 			utils.InfoLog.Info("LTS: Admitiendo proceso inicial (PID 0) sin consultar memoria.")
-			removerDeNew(pcb)
+			utils.InfoLog.Debug("LTS: Removiendo proceso inicial de cola NEW...")
+			// El newMutex ya está bloqueado en este contexto, usar directamente removerDeCola
+			removerDeCola(&colaNew, pcb)
+			utils.InfoLog.Debug("LTS: Proceso inicial removido de NEW exitosamente")
 			pcb.CambiarEstado(EstadoReady)
 			readyMutex.Lock()
 			colaReady = append(colaReady, pcb)
 			readyMutex.Unlock()
 			condReady.Signal()
+			utils.InfoLog.Info("LTS: Señal enviada al STS para proceso inicial", "pid", pcb.PID)
 			continue // Volver al inicio del bucle para procesar el siguiente
 		}
 		// --- FIN CASO ESPECIAL ---
@@ -77,7 +93,7 @@ func PlanificarLargoPlazo() {
 
 		// Intentos de inicialización en memoria
 		if inicializarEnMemoriaConReintentos(pcb) {
-			removerDeNew(pcb)
+			removerDeCola(&colaNew, pcb)
 			pcb.CambiarEstado(EstadoReady)
 
 			readyMutex.Lock()
@@ -86,7 +102,7 @@ func PlanificarLargoPlazo() {
 			condReady.Signal()
 		} else {
 			// Si falla la inicialización, liberar el semáforo y finalizar proceso
-			removerDeNew(pcb)
+			removerDeCola(&colaNew, pcb)
 			FinalizarProceso(pcb, "ERROR_INICIALIZACION_MEMORIA")
 			semaforoMultiprogram.Signal()
 		}
