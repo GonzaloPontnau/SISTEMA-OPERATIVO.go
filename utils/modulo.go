@@ -3,7 +3,6 @@ package utils
 import (
 	"fmt"
 	"log/slog"
-	"net"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -88,60 +87,6 @@ func (m *Modulo) IniciarServidor(ip string, puerto int) {
 	slog.Info("Servidor HTTP iniciado", "módulo", m.Nombre, "ip", ip, "puerto", puerto)
 }
 
-func (m *Modulo) IniciarServidorAutoPuerto(ip string) int {
-	// Escuchar en puerto dinámico
-	ln, err := net.Listen("tcp", fmt.Sprintf("%s:0", ip))
-	if err != nil {
-		slog.Error("Error al iniciar servidor HTTP en puerto dinámico", "error", err)
-		os.Exit(1)
-	}
-
-	puerto := ln.Addr().(*net.TCPAddr).Port
-
-	// Crear servidor sobre ese listener
-	m.Server = NewHTTPServerConListener(ip, puerto, m.Nombre, ln)
-
-	// Registrar handlers como siempre
-	for tipoStr, handlersPorOperacion := range m.HandlerFunc {
-		tipo, err := strconv.Atoi(tipoStr)
-		if err != nil {
-			slog.Error("Error al convertir tipo de mensaje a entero", "tipo", tipoStr, "error", err)
-			continue
-		}
-
-		m.Server.RegisterHTTPHandler(tipo, func(msg *Mensaje) (interface{}, error) {
-			operacion := msg.Operacion
-			if operacion == "" {
-				operacion = "default"
-			}
-
-			handler, existe := handlersPorOperacion[operacion]
-			if !existe {
-				handler, existe = handlersPorOperacion["default"]
-				if !existe {
-					slog.Error("No hay handler para operación", "tipo", tipo, "operacion", operacion)
-					return nil, fmt.Errorf("no hay handler para operación %s", operacion)
-				}
-			}
-
-			return handler(msg)
-		})
-	}
-
-	// Iniciar servidor sobre el listener
-	go func() {
-		err := m.Server.Start()
-		if err != nil {
-			slog.Error("Error al iniciar servidor HTTP", "error", err)
-			os.Exit(1)
-		}
-	}()
-
-	slog.Info("Servidor HTTP iniciado", "módulo", m.Nombre, "ip", ip, "puerto", puerto)
-
-	return puerto
-}
-
 // CrearCliente crea un cliente HTTP para conectarse a otro módulo
 func (m *Modulo) CrearCliente(nombre string, ip string, puerto int) {
 	m.Clientes[nombre] = NewHTTPClient(ip, puerto, m.Nombre)
@@ -224,11 +169,11 @@ const (
 	MensajeFetch
 	MensajeEjecutar
 	MensajeObtenerInstruccion
-	MensajeEspacioLibre        = 4
+	MensajeEspacioLibre        = 7
 	MensajeInicializarProceso  = 42
 	MensajeInterrupcion        = 50
 	MensajeFinalizarProceso    = 43
 	MensajeDessuspenderProceso = 44
 	MensajeSuspenderProceso    = 45
-	MensajeMemoryDump		   = 46
+	MensajeMemoryDump          = 46
 )

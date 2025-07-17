@@ -12,18 +12,18 @@ import (
 
 // Agregar a memoria.go - Estructura para leer config de memoria
 type MemoriaConfig struct {
-	PortMemory     int    `json:"port_memory"`
-	IPMemory       string `json:"ip_memory"`
-	MemorySize     int    `json:"memory_size"`
-	PageSize       int    `json:"page_size"`
-	EntriesPerPage int    `json:"entries_per_page"`
-	NumberOfLevels int    `json:"number_of_levels"`
-	MemoryDelay    int    `json:"memory_delay"`
-	SwapfilePath   string `json:"swapfile_path"`
-	SwapDelay      int    `json:"swap_delay"`
-	LogLevel       string `json:"log_level"`
-	DumpPath       string `json:"dump_path"`
-	ScriptsPath    string `json:"scripts_path"`
+	PortMemory     int    `json:"PUERTO_MEMORIA"`
+	IPMemory       string `json:"IP_MEMORIA"`
+	MemorySize     int    `json:"TAM_MEMORIA"`
+	PageSize       int    `json:"TAM_PAGINA"`
+	EntriesPerPage int    `json:"ENTRADAS_POR_TABLA"`
+	NumberOfLevels int    `json:"CANTIDAD_NIVELES"`
+	MemoryDelay    int    `json:"RETARDO_MEMORIA"`
+	SwapfilePath   string `json:"SWAPFILE_PATH"`
+	SwapDelay      int    `json:"RETARDO_SWAP"`
+	LogLevel       string `json:"LOG_LEVEL"`
+	DumpPath       string `json:"DUMP_PATH"`
+	ScriptsPath    string `json:"SCRIPTS_PATH"`
 }
 
 // Configuración de memoria obtenida dinámicamente
@@ -212,14 +212,23 @@ func obtenerMarcoDeMemoria(pid, numeroPagina int) int {
 
 	// Verificar en caché si está habilitada
 	if config.CacheEntries > 0 {
-		if indiceCache := buscarEnCache(pid, numeroPagina); indiceCache != -1 {
-			return indiceCache
+		utils.InfoLog.Info(fmt.Sprintf("PID: %d - DEBUG: Buscando en cache - Página: %d", pid, numeroPagina))
+		
+		if marco := buscarEnCache(pid, numeroPagina); marco != -1 {
+			utils.InfoLog.Info(fmt.Sprintf("PID: %d - DEBUG: Cache HIT encontrado - Página: %d, Marco: %d", pid, numeroPagina, marco))
+			return marco
 		}
+		
+		utils.InfoLog.Info(fmt.Sprintf("PID: %d - DEBUG: Cache MISS - Página: %d", pid, numeroPagina))
 	}
+
+	utils.InfoLog.Info(fmt.Sprintf("PID: %d - DEBUG: Calculando entradas multinivel - Página: %d", pid, numeroPagina))
 
 	// NUEVO: Calcular entradas multinivel
 	direccionLogica := numeroPagina * tamanoPagina
 	entradas, _ := calcularEntradasNiveles(direccionLogica)
+
+	utils.InfoLog.Info(fmt.Sprintf("PID: %d - DEBUG: Entradas calculadas - Página: %d", pid, numeroPagina))
 
 	// ACTUALIZADO: Preparar mensaje con info multinivel
 	params := map[string]interface{}{
@@ -229,10 +238,14 @@ func obtenerMarcoDeMemoria(pid, numeroPagina int) int {
 		"niveles":          numeroDeNiveles, // NUEVO
 	}
 
+	utils.InfoLog.Info(fmt.Sprintf("PID: %d - DEBUG: Aplicando delay de cache - Página: %d", pid, numeroPagina))
+
 	// Simular delay de cache si está configurado
 	if config.CacheDelay > 0 {
 		time.Sleep(time.Duration(config.CacheDelay) * time.Millisecond)
 	}
+
+	utils.InfoLog.Info(fmt.Sprintf("PID: %d - DEBUG: Enviando mensaje a Memoria - Página: %d", pid, numeroPagina))
 
 	// Enviar solicitud a memoria
 	respuesta, err := modulo.EnviarMensaje("Memoria", utils.MensajeObtenerMarco, "OBTENER_MARCO", params)
@@ -240,6 +253,8 @@ func obtenerMarcoDeMemoria(pid, numeroPagina int) int {
 		utils.ErrorLog.Error("Error al solicitar marco a memoria", "error", err)
 		return -1
 	}
+
+	utils.InfoLog.Info(fmt.Sprintf("PID: %d - DEBUG: Respuesta recibida de Memoria - Página: %d", pid, numeroPagina))
 
 	// Extraer marco de la respuesta
 	datos, ok := respuesta.(map[string]interface{})
@@ -263,36 +278,49 @@ func obtenerMarcoDeMemoria(pid, numeroPagina int) int {
 
 	// Si la caché está habilitada, actualizar
 	if config.CacheEntries > 0 {
-		actualizarCache(pid, numeroPagina)
+		utils.InfoLog.Info(fmt.Sprintf("PID: %d - DEBUG: Actualizando cache - Página: %d, Marco: %d", pid, numeroPagina, marcoInt))
+		actualizarCache(pid, numeroPagina, marcoInt)
+		utils.InfoLog.Info(fmt.Sprintf("PID: %d - DEBUG: Cache actualizada - Página: %d", pid, numeroPagina))
 	}
 
+	utils.InfoLog.Info(fmt.Sprintf("PID: %d - DEBUG: Retornando marco - Página: %d, Marco: %d", pid, numeroPagina, marcoInt))
 	return marcoInt
 }
 
 // Buscar en caché
 func buscarEnCache(pid, numeroPagina int) int {
+	utils.InfoLog.Info(fmt.Sprintf("PID: %d - DEBUG: Entrando a buscarEnCache - Página: %d", pid, numeroPagina))
+	
 	mutex.Lock()
 	defer mutex.Unlock()
 
+	utils.InfoLog.Info(fmt.Sprintf("PID: %d - DEBUG: Mutex adquirido en buscarEnCache - Página: %d", pid, numeroPagina))
+
 	for i, entrada := range cacheEntries {
+		utils.InfoLog.Info(fmt.Sprintf("PID: %d - DEBUG: Revisando entrada %d - Página buscada: %d, Página en cache: %d, PID en cache: %d", 
+			pid, i, numeroPagina, entrada.PageNumber, entrada.PID))
+			
 		if entrada.PageNumber == numeroPagina && entrada.PID == pid {
 			// Cache Hit
-			utils.InfoLog.Info(fmt.Sprintf("PID: %d - Cache Hit - Pagina: %d", pid, numeroPagina))
+			utils.InfoLog.Info(fmt.Sprintf("PID: %d - Cache Hit - Pagina: %d, Marco: %d", pid, numeroPagina, entrada.FrameNumber))
 
 			// Actualizar bit de referencia para CLOCK
 			cacheEntries[i].Referenced = true
+			
+			utils.InfoLog.Info(fmt.Sprintf("PID: %d - DEBUG: Retornando marco de cache - Página: %d, Marco: %d", pid, numeroPagina, entrada.FrameNumber))
 
-			return i // Simplificado: usamos índice como marco
+			return entrada.FrameNumber // Retornar el marco real
 		}
 	}
 
 	// Cache Miss
 	utils.InfoLog.Info(fmt.Sprintf("PID: %d - Cache Miss - Pagina: %d", pid, numeroPagina))
+	utils.InfoLog.Info(fmt.Sprintf("PID: %d - DEBUG: Saliendo de buscarEnCache con miss - Página: %d", pid, numeroPagina))
 	return -1
 }
 
 // Actualizar caché
-func actualizarCache(pid, numeroPagina int) {
+func actualizarCache(pid, numeroPagina int, marco int) { // ← AGREGAR parámetro marco
 	mutex.Lock()
 	defer mutex.Unlock()
 
@@ -308,11 +336,12 @@ func actualizarCache(pid, numeroPagina int) {
 	// Si hay espacio, agregar
 	if indiceLibre != -1 {
 		cacheEntries[indiceLibre] = CacheEntry{
-			PageNumber: numeroPagina,
-			Content:    "", // Contenido se obtendría al leer
-			PID:        pid,
-			Modified:   false,
-			Referenced: true,
+			PageNumber:  numeroPagina,
+			FrameNumber: marco,        // ← GUARDAR EL MARCO REAL
+			Content:     "",           // Contenido se obtendría al leer
+			PID:         pid,
+			Modified:    false,
+			Referenced:  true,
 		}
 		utils.InfoLog.Info(fmt.Sprintf("PID: %d - Cache Add - Pagina: %d", pid, numeroPagina))
 		return
@@ -320,14 +349,14 @@ func actualizarCache(pid, numeroPagina int) {
 
 	// No hay espacio, aplicar algoritmo de reemplazo
 	if config.CacheReplacement == "CLOCK" {
-		aplicarCLOCK(pid, numeroPagina)
+		aplicarCLOCK(pid, numeroPagina, marco) // ← PASAR marco
 	} else if config.CacheReplacement == "CLOCK-M" {
-		aplicarCLOCKM(pid, numeroPagina)
+		aplicarCLOCKM(pid, numeroPagina, marco) // ← PASAR marco
 	}
 }
 
 // Algoritmo CLOCK para caché
-func aplicarCLOCK(pid, numeroPagina int) {
+func aplicarCLOCK(pid, numeroPagina int, marco int) {
 	for {
 		// Si la entrada actual no está referenciada, es la víctima
 		if !cacheEntries[clockPointer].Referenced {
@@ -339,6 +368,7 @@ func aplicarCLOCK(pid, numeroPagina int) {
 			// Reemplazar
 			cacheEntries[clockPointer] = CacheEntry{
 				PageNumber: numeroPagina,
+				FrameNumber: marco,
 				Content:    "", // Contenido se obtendría al leer
 				PID:        pid,
 				Modified:   false,
@@ -358,7 +388,7 @@ func aplicarCLOCK(pid, numeroPagina int) {
 }
 
 // Algoritmo CLOCK-M para caché
-func aplicarCLOCKM(pid, numeroPagina int) {
+func aplicarCLOCKM(pid, numeroPagina int, marco int) {
 	// Primera vuelta: buscar (0,0) - no referenciada, no modificada
 	punteroInicial := clockPointer
 	for {
@@ -408,6 +438,7 @@ func aplicarCLOCKM(pid, numeroPagina int) {
 	// Reemplazar
 	cacheEntries[clockPointer] = CacheEntry{
 		PageNumber: numeroPagina,
+		FrameNumber: marco,
 		Content:    "", // Contenido se obtendría al leer
 		PID:        pid,
 		Modified:   false,
@@ -421,35 +452,38 @@ func aplicarCLOCKM(pid, numeroPagina int) {
 
 // Actualizar memoria desde caché
 func actualizarMemoria(pid, numeroPagina int) {
-	// Buscar entrada en caché
+	// Buscar entrada en caché (SIN adquirir mutex - ya lo tenemos)
 	var contenido string
+	var marco int = -1
+	
 	for _, e := range cacheEntries {
 		if e.PageNumber == numeroPagina && e.PID == pid {
 			contenido = e.Content
+			marco = e.FrameNumber  // ← USAR EL MARCO GUARDADO EN CACHE
 			break
 		}
 	}
 
-	// Obtener marco desde memoria
-	marco := obtenerMarcoDeMemoria(pid, numeroPagina)
-
-	if marco != -1 {
-		// Preparar mensaje para memoria
-		params := map[string]interface{}{
-			"pid":       pid,
-			"marco":     marco,
-			"contenido": contenido,
-		}
-
-		// Enviar solicitud a memoria
-		_, err := modulo.EnviarMensaje("Memoria", utils.MensajeEscribir, "ESCRIBIR", params)
-		if err != nil {
-			utils.ErrorLog.Error("Error al actualizar memoria", "error", err)
-			return
-		}
-
-		utils.InfoLog.Info(fmt.Sprintf("PID: %d - Memory Update - Página: %d - Frame: %d", pid, numeroPagina, marco))
+	if marco == -1 {
+		utils.ErrorLog.Error("No se encontró la página en caché para actualizar memoria", "pid", pid, "pagina", numeroPagina)
+		return
 	}
+
+	// Preparar mensaje para memoria usando el marco que ya tenemos
+	params := map[string]interface{}{
+		"pid":              pid,
+		"direccion_fisica": marco * tamanoPagina, // ← CALCULAR DIRECCIÓN FÍSICA DIRECTAMENTE
+		"valor":            contenido,
+	}
+
+	// Enviar solicitud a memoria
+	_, err := modulo.EnviarMensaje("Memoria", utils.MensajeEscribir, "ESCRIBIR", params)
+	if err != nil {
+		utils.ErrorLog.Error("Error al actualizar memoria", "error", err)
+		return
+	}
+
+	utils.InfoLog.Info(fmt.Sprintf("PID: %d - Memory Update - Página: %d - Frame: %d", pid, numeroPagina, marco))
 }
 
 // Escribir en memoria

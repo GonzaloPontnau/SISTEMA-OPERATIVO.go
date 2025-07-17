@@ -13,13 +13,13 @@ var (
 	pidMutex   sync.Mutex
 
 	// Colas de estados
-	colaNew         []*PCB              = []*PCB{}
-	colaReady       []*PCB              = []*PCB{}
-	colaExec        map[string]*PCB     = make(map[string]*PCB) // Mapa de [nombreCPU]*PCB
-	colaBlocked     []*PCB              = []*PCB{}
-	colaSuspReady   []*PCB              = []*PCB{}
-	colaSuspBlocked []*PCB              = []*PCB{}
-	colaExit        []*PCB              = []*PCB{}
+	colaNew         []*PCB          = []*PCB{}
+	colaReady       []*PCB          = []*PCB{}
+	colaExec        map[string]*PCB = make(map[string]*PCB) // Mapa de [nombreCPU]*PCB
+	colaBlocked     []*PCB          = []*PCB{}
+	colaSuspReady   []*PCB          = []*PCB{}
+	colaSuspBlocked []*PCB          = []*PCB{}
+	colaExit        []*PCB          = []*PCB{}
 
 	// Mutexes optimizados
 	newMutex         sync.Mutex
@@ -234,14 +234,20 @@ func FinalizarProceso(pcb *PCB, motivo string) {
 	mapaMutex.Unlock()
 }
 
-// notificarFinalizacionAMemoria simplificado
+// notificarFinalizacionAMemoria simplificado con acceso seguro al cliente
 func notificarFinalizacionAMemoria(pid int) {
-	datos := map[string]interface{}{
-		"pid":       pid,
-		"operacion": "FINALIZAR_PROCESO",
+	// Obtener cliente de memoria de forma segura
+	cliente := GetMemoriaClient()
+	if cliente == nil {
+		utils.ErrorLog.Error("No se pudo obtener cliente de memoria para finalización", "pid", pid)
+		return
 	}
 
-	_, err := memoriaClient.EnviarHTTPOperacion("FINALIZAR_PROCESO", datos)
+	datos := map[string]interface{}{
+		"pid": pid,
+	}
+
+	_, err := cliente.EnviarHTTPMensaje(utils.MensajeFinalizarProceso, "default", datos)
 	if err != nil {
 		utils.ErrorLog.Error("Error notificando finalización a Memoria", "pid", pid, "error", err.Error())
 	}
@@ -291,7 +297,16 @@ func removerDeCola(cola *[]*PCB, pcb *PCB) bool {
 
 // Funciones de planificación optimizadas
 func intentarAdmitirProceso() {
-	condNew.Signal()
+	newMutex.Lock()
+	defer newMutex.Unlock()
+	
+	// Solo enviar señal si hay procesos esperando en NEW
+	if len(colaNew) > 0 {
+		utils.InfoLog.Debug("intentarAdmitirProceso: Enviando señal, hay procesos en NEW", "cantidad", len(colaNew))
+		condNew.Signal()
+	} else {
+		utils.InfoLog.Debug("intentarAdmitirProceso: No hay procesos en NEW, no enviando señal")
+	}
 }
 
 func despacharProcesoSiCorresponde() {
@@ -299,9 +314,15 @@ func despacharProcesoSiCorresponde() {
 }
 
 func notificarSwapAMemoria(pid int) {
-	datos := map[string]interface{}{
-		"pid":       pid,
-		"operacion": "SUSPENDER_PROCESO",
+	// Obtener cliente de memoria de forma segura
+	cliente := GetMemoriaClient()
+	if cliente == nil {
+		utils.ErrorLog.Error("No se pudo obtener cliente de memoria para swap", "pid", pid)
+		return
 	}
-	memoriaClient.EnviarHTTPOperacion("SUSPENDER_PROCESO", datos)
+
+	datos := map[string]interface{}{
+		"pid": pid,
+	}
+	cliente.EnviarHTTPMensaje(utils.MensajeSuspenderProceso, "default", datos)
 }

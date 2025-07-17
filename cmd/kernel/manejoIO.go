@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 
@@ -11,6 +12,8 @@ import (
 var (
 	dispositivosIO      map[string]*utils.HTTPClient = make(map[string]*utils.HTTPClient)
 	dispositivosIOMutex sync.RWMutex
+	contadorBalanceador int // Contador para round-robin
+	balanceadorMutex    sync.Mutex
 )
 
 // RegistrarDispositivoIO optimizado
@@ -36,7 +39,10 @@ func EnviarSolicitudIO(pcb *PCB, dispositivo string, tiempo int) {
 	cliente, existe := ObtenerClienteIO(dispositivo)
 	if !existe {
 		utils.ErrorLog.Error("Dispositivo IO no registrado", "dispositivo", dispositivo, "pid", pcb.PID)
-		FinalizarProceso(pcb, "ERROR_IO_INEXISTENTE")
+		utils.InfoLog.Info(fmt.Sprintf("## (%d) - IO no disponible, continuando ejecución", pcb.PID))
+		// En lugar de finalizar, incrementar PC y volver a READY para continuar el bucle infinito
+		pcb.PC++
+		MoverProcesoAReady(pcb)
 		return
 	}
 
@@ -51,7 +57,10 @@ func EnviarSolicitudIO(pcb *PCB, dispositivo string, tiempo int) {
 	_, err := cliente.EnviarHTTPOperacion("IO_REQUEST", datos)
 	if err != nil {
 		utils.ErrorLog.Error("Error comunicación IO", "dispositivo", dispositivo, "pid", pcb.PID, "error", err.Error())
-		FinalizarProceso(pcb, "ERROR_IO_COMUNICACION")
+		utils.InfoLog.Info(fmt.Sprintf("## (%d) - Error de comunicación IO, continuando ejecución", pcb.PID))
+		// En lugar de finalizar, incrementar PC y volver a READY para continuar el bucle infinito
+		pcb.PC++
+		MoverProcesoAReady(pcb)
 	}
 }
 
@@ -72,8 +81,17 @@ func ManejadorRegistroIO(origen string, datos map[string]interface{}) (interface
 		}, true
 	}
 
+	// Registrar dispositivo con nombre completo (IODISCO, IODISCO2)
 	RegistrarDispositivoIO(tipoModulo, ip, int(puertoFloat))
-	utils.InfoLog.Info(fmt.Sprintf("## Módulo IO '%s' registrado", tipoModulo))
+
+	// También registrar con nombre simplificado (DISCO, DISCO2) para compatibilidad
+	nombreSimplificado := strings.TrimPrefix(tipoModulo, "IO")
+	if nombreSimplificado != tipoModulo {
+		RegistrarDispositivoIO(nombreSimplificado, ip, int(puertoFloat))
+		utils.InfoLog.Info(fmt.Sprintf("## Dispositivo IO registrado: '%s' y '%s'", tipoModulo, nombreSimplificado))
+	} else {
+		utils.InfoLog.Info(fmt.Sprintf("## Módulo IO '%s' registrado", tipoModulo))
+	}
 
 	return map[string]interface{}{
 		"status":  "OK",
@@ -110,8 +128,9 @@ func ProcesarSolicitudIO(datos map[string]interface{}) (interface{}, bool) {
 		return map[string]interface{}{"status": "ERROR", "mensaje": "Proceso no encontrado"}, true
 	}
 
-	MoverProcesoABlocked(pcb, dispositivo)
-	go EnviarSolicitudIO(pcb, dispositivo, int(tiempoFloat))
+	dispositivoSeleccionado := SeleccionarDispositivoIO(dispositivo, pcb.PID)
+	MoverProcesoABlocked(pcb, fmt.Sprintf("IO_%s", dispositivoSeleccionado))
+	go EnviarSolicitudIO(pcb, dispositivoSeleccionado, int(tiempoFloat))
 	go despacharProcesoSiCorresponde()
 
 	return map[string]interface{}{"status": "OK", "mensaje": "IO procesando"}, true
@@ -137,8 +156,52 @@ func ProcesarIOTerminada(datos map[string]interface{}) (interface{}, bool) {
 	}
 
 	utils.InfoLog.Info(fmt.Sprintf("## (%d) finalizó IO y pasa a READY", pcb.PID))
+	// Incrementar PC para pasar a la siguiente instrucción después de la I/O
+	pcb.PC++
 	MoverProcesoAReady(pcb)
 	go despacharProcesoSiCorresponde()
 
 	return map[string]interface{}{"status": "OK", "mensaje": "IO completada"}, true
+}
+
+// SeleccionarDispositivoIO implementa balanceador de carga genérico para dispositivos IO
+func SeleccionarDispositivoIO(dispositivoSolicitado string, pid int) string {
+	dispositivosIOMutex.RLock()
+	defer dispositivosIOMutex.RUnlock()
+
+	// Si el dispositivo solicitado existe directamente, usarlo
+	if _, existe := dispositivosIO[dispositivoSolicitado]; existe {
+		utils.InfoLog.Info(fmt.Sprintf("## (%d) - Usando dispositivo directo: %s", pid, dispositivoSolicitado))
+		return dispositivoSolicitado
+	}
+
+	// Si el dispositivo no existe, buscar dispositivos similares para distribución automática
+	dispositivosSimilares := obtenerDispositivosSimilares(dispositivoSolicitado)
+	if len(dispositivosSimilares) == 0 {
+		utils.ErrorLog.Error("No hay dispositivos disponibles", "dispositivo_solicitado", dispositivoSolicitado, "pid", pid)
+		return dispositivoSolicitado // Fallback al original
+	}
+
+	// Usar round-robin para distribuir carga entre dispositivos disponibles
+	balanceadorMutex.Lock()
+	dispositivoSeleccionado := dispositivosSimilares[contadorBalanceador%len(dispositivosSimilares)]
+	contadorBalanceador++
+	balanceadorMutex.Unlock()
+
+	utils.InfoLog.Info(fmt.Sprintf("## (%d) - Balanceador IO: %s -> %s", pid, dispositivoSolicitado, dispositivoSeleccionado))
+	return dispositivoSeleccionado
+}
+
+// obtenerDispositivosSimilares devuelve lista de todos los dispositivos IO disponibles
+func obtenerDispositivosSimilares(dispositivoBase string) []string {
+	var dispositivos []string
+
+	// Obtener todos los dispositivos IO registrados
+	for nombre := range dispositivosIO {
+		dispositivos = append(dispositivos, nombre)
+	}
+
+	// Ordenar para consistencia en el balanceador
+	sort.Strings(dispositivos)
+	return dispositivos
 }

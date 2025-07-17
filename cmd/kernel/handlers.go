@@ -237,7 +237,7 @@ func procesarFinalizacion(pid int, datos map[string]interface{}) (interface{}, e
 
 	// Operaciones post-finalización en paralelo
 	go func() {
-		intentarAdmitirProceso()
+		intentarAdmitirProceso() 
 		despacharProcesoSiCorresponde()
 	}()
 

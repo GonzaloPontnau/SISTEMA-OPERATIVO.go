@@ -27,7 +27,6 @@ var (
 	kernelModulo  *utils.Modulo
 	kernelConfig  *KernelConfig
 	memoriaClient *utils.HTTPClient
-	cpuClients    map[string]*utils.HTTPClient
 )
 
 // inicializarKernel optimizado
@@ -38,6 +37,9 @@ func inicializarKernel(configPath string) error {
 	utils.InicializarLogger(kernelConfig.LogLevel, "Kernel")
 	utils.InfoLog.Info("Inicializando Kernel...")
 
+	// Inicializar el mapa de CPUs ANTES de cualquier otra operación
+	inicializarMapaCPUs()
+
 	InicializarPlanificador(kernelConfig)
 
 	// Inicializar y conectar con Memoria
@@ -46,8 +48,6 @@ func inicializarKernel(configPath string) error {
 		utils.ErrorLog.Error("No se pudo conectar con Memoria. Abortando.", "error", err)
 		return err
 	}
-
-	cpuClients = make(map[string]*utils.HTTPClient)
 
 	registrarHandlers()
 	kernelModulo.IniciarServidor(kernelConfig.IPKernel, kernelConfig.PortKernel)
@@ -95,4 +95,21 @@ func iniciarPlanificadores() {
 	go PlanificarLargoPlazo()
 	go PlanificarCortoPlazo()
 	utils.InfoLog.Info("Planificadores iniciados.")
+}
+
+// inicializarMapaCPUs inicializa el mapa de CPUs durante el arranque del kernel
+func inicializarMapaCPUs() {
+	// Esta función se debe importar desde STS.go
+	InicializarMapaCPUs()
+	utils.InfoLog.Info("Mapa de CPUs inicializado correctamente")
+}
+
+// GetMemoriaClient proporciona acceso seguro al cliente de memoria
+func GetMemoriaClient() *utils.HTTPClient {
+	if memoriaClient == nil {
+		utils.ErrorLog.Error("DIAGNÓSTICO: Cliente de memoria no inicializado - esto es un error crítico")
+		return nil
+	}
+	utils.InfoLog.Debug("DIAGNÓSTICO: Cliente de memoria obtenido correctamente", "cliente", memoriaClient != nil)
+	return memoriaClient
 }

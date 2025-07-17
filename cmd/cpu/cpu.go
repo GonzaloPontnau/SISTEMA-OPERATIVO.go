@@ -17,6 +17,7 @@ type TLBEntry struct {
 
 type CacheEntry struct {
 	PageNumber int
+	FrameNumber int
 	Content    string
 	PID        int
 	Modified   bool // Para algoritmo CLOCK-M

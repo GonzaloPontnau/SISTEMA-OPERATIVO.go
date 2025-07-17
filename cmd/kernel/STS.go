@@ -11,9 +11,21 @@ import (
 
 // Variables globales para gestión de CPUs
 var (
+	cpuClients               map[string]*utils.HTTPClient
 	cpuClientsMutex          sync.Mutex
 	ultimoLogCPUNoDisponible time.Time // Para evitar spam de logs
 )
+
+// InicializarMapaCPUs inicializa el mapa de CPUs de forma segura
+func InicializarMapaCPUs() {
+	cpuClientsMutex.Lock()
+	defer cpuClientsMutex.Unlock()
+
+	if cpuClients == nil {
+		cpuClients = make(map[string]*utils.HTTPClient)
+		utils.InfoLog.Info("Mapa cpuClients inicializado durante el arranque del kernel")
+	}
+}
 
 // registrarCPU registra un nuevo cliente CPU
 func registrarCPU(nombre string, ip string, puerto int) {
@@ -23,10 +35,10 @@ func registrarCPU(nombre string, ip string, puerto int) {
 	// DIAGNÓSTICO: Verificar estado inicial del mapa
 	utils.InfoLog.Debug("Estado del mapa cpuClients ANTES del registro", "total_cpus", len(cpuClients), "keys", obtenerNombresCPUs())
 
-	// Asegurar que el mapa está inicializado
+	// El mapa ya debe estar inicializado durante el arranque del kernel
 	if cpuClients == nil {
-		utils.InfoLog.Warn("Mapa cpuClients no inicializado, creándolo ahora")
-		cpuClients = make(map[string]*utils.HTTPClient)
+		utils.ErrorLog.Error("ERROR CRÍTICO: Mapa cpuClients no inicializado - esto indica un problema en el arranque del kernel")
+		cpuClients = make(map[string]*utils.HTTPClient) // Fallback de emergencia
 	}
 
 	// Verificar si la CPU ya estaba registrada
@@ -119,10 +131,21 @@ func PlanificarCortoPlazo() {
 		utils.InfoLog.Info("STS: Proceso detectado en READY, procediendo a seleccionar...", "procesos_en_ready", len(colaReady))
 
 		// Seleccionar próximo proceso según algoritmo
+		utils.InfoLog.Info("STS: Seleccionando proceso según algoritmo")
 		pcb := seleccionarProcesoSTS()
+
+		if pcb != nil {
+			utils.InfoLog.Info("STS: Proceso seleccionado", "pcb_pid", pcb.PID)
+			// Remover inmediatamente de READY para evitar condiciones de carrera
+			// Ya tenemos el readyMutex bloqueado, usar directamente removerDeCola
+			removerDeCola(&colaReady, pcb)
+		} else {
+			utils.InfoLog.Info("STS: Proceso seleccionado es nil")
+		}
 
 		// Si SRT decide desalojar, pcb será nil. El planificador se re-ejecutará
 		if pcb == nil {
+			utils.InfoLog.Debug("STS: Proceso seleccionado es nil, continuando")
 			readyMutex.Unlock()
 			time.Sleep(100 * time.Millisecond) // Pequeña pausa para que el desalojo se procese
 			continue
@@ -134,59 +157,65 @@ func PlanificarCortoPlazo() {
 		var nombreCPU string
 		var cpuClient *utils.HTTPClient
 
-		utils.InfoLog.Debug("STS: Buscando CPU disponible...")
+		utils.InfoLog.Info("STS: Buscando CPU disponible...")
 		for {
 			nombreCPU, cpuClient = obtenerCPUDisponibleParaEjecucion()
+			utils.InfoLog.Info("STS: Resultado búsqueda CPU", "nombre", nombreCPU, "cliente_encontrado", cpuClient != nil)
 			if cpuClient != nil {
 				// CPU encontrada. Reservarla.
 				execMutex.Lock()
 				colaExec[nombreCPU] = pcb
 				execMutex.Unlock()
-				utils.InfoLog.Debug("STS: CPU encontrada y reservada", "nombre", nombreCPU)
+				utils.InfoLog.Info("STS: CPU encontrada y reservada", "nombre", nombreCPU)
 				break
 			}
 			utils.InfoLog.Warn("STS: No hay CPU disponible, reintentando en 200ms...")
 			time.Sleep(200 * time.Millisecond) // Esperar antes de volver a verificar
 		}
 
-		// Remover proceso seleccionado de la cola READY (ahora que tenemos CPU)
-		readyMutex.Lock()
-		removerDeReady(pcb)
-		readyMutex.Unlock()
-
 		// Asignar a CPU
+		utils.InfoLog.Info("STS: Cambiando estado del proceso a EXEC", "pid", pcb.PID)
 		pcb.CambiarEstado(EstadoExec)
+		utils.InfoLog.Info("STS: Estado del proceso cambiado a EXEC", "pid", pcb.PID)
 
 		utils.InfoLog.Info(fmt.Sprintf("Proceso despachado a CPU %s", nombreCPU), "pid", pcb.PID)
 
 		// Enviar a CPU y procesar su ciclo de ejecución de forma síncrona en una goroutine
+		utils.InfoLog.Info("STS: Iniciando goroutine despacharYProcesarCPU", "pid", pcb.PID, "cpu", nombreCPU)
 		go despacharYProcesarCPU(nombreCPU, cpuClient, pcb)
 	}
 }
 
 // despacharYProcesarCPU se encarga del ciclo de vida de un proceso en la CPU
 func despacharYProcesarCPU(nombreCPU string, cpuClient *utils.HTTPClient, pcb *PCB) {
+	utils.InfoLog.Info("despacharYProcesarCPU: Iniciando", "pid", pcb.PID, "cpu", nombreCPU)
+
 	// Liberar la CPU al final de la ejecución, sin importar cómo termine
 	defer func() {
+		utils.InfoLog.Info("despacharYProcesarCPU: Liberando CPU en defer", "pid", pcb.PID, "cpu", nombreCPU)
 		execMutex.Lock()
 		delete(colaExec, nombreCPU)
 		execMutex.Unlock()
 		utils.InfoLog.Info(fmt.Sprintf("CPU %s liberada", nombreCPU), "pid", pcb.PID)
 	}()
 
-	// Llamada síncrona a la CPU
-	fueExitoso := EnviarProcesoCPU(pcb, nombreCPU)
+	// Ciclo de ejecución en CPU - continúa mientras el proceso esté en EXEC
+	for pcb.Estado == EstadoExec {
+		utils.InfoLog.Info("despacharYProcesarCPU: Enviando proceso a CPU", "pid", pcb.PID, "cpu", nombreCPU, "pc", pcb.PC)
+		fueExitoso := EnviarProcesoCPU(pcb, nombreCPU)
+		utils.InfoLog.Info("despacharYProcesarCPU: Resultado de EnviarProcesoCPU", "pid", pcb.PID, "exitoso", fueExitoso, "estado_actual", pcb.Estado)
 
-	// Si la comunicación falló o la CPU reportó un error, el proceso no se procesó.
-	// El manejador de la respuesta en EnviarProcesoCPU ya se encargó del estado del PCB.
-	if !fueExitoso {
-		utils.ErrorLog.Error("El ciclo de ejecución en CPU falló. El proceso podría haber sido movido a READY o EXIT.", "pid", pcb.PID, "cpu", nombreCPU)
-		// Si la comunicación falló, EnviarProcesoCPU lo mueve a READY.
-		// Si la CPU retornó error, el handler de la respuesta lo mueve a EXIT.
-		// En cualquier caso, el proceso ya no está en EXEC, pero debemos asegurarnos.
-		if pcb.Estado == EstadoExec {
-			utils.InfoLog.Warn("El proceso seguía en estado EXEC después de un fallo. Forzando a READY.", "pid", pcb.PID)
-			MoverProcesoAReady(pcb)
+		// Si la comunicación falló o la CPU reportó un error, salir del ciclo
+		if !fueExitoso {
+			utils.ErrorLog.Error("El ciclo de ejecución en CPU falló", "pid", pcb.PID, "cpu", nombreCPU)
+			// Si la comunicación falló, EnviarProcesoCPU ya se encargó del estado del PCB
+			break
+		}
+
+		// Si el proceso cambió de estado (por syscall, exit, etc.), salir del ciclo
+		if pcb.Estado != EstadoExec {
+			utils.InfoLog.Info("despacharYProcesarCPU: Proceso cambió de estado, finalizando ciclo", "pid", pcb.PID, "nuevo_estado", pcb.Estado)
+			break
 		}
 	}
 	// Si fue exitoso, el proceso ya fue transicionado a otro estado (Blocked, Exit, etc)
@@ -196,6 +225,8 @@ func despacharYProcesarCPU(nombreCPU string, cpuClient *utils.HTTPClient, pcb *P
 // obtenerCPUDisponibleParaEjecucion busca una CPU que no esté en la cola de ejecución.
 // Esta función ahora es segura para ser llamada sin un bloqueo externo en execMutex.
 func obtenerCPUDisponibleParaEjecucion() (string, *utils.HTTPClient) {
+	utils.InfoLog.Info("STS: Iniciando búsqueda de CPU disponible")
+
 	// 1. Obtener una lista de todas las CPUs registradas (lectura segura)
 	cpuClientsMutex.Lock()
 	cpusDisponibles := make(map[string]*utils.HTTPClient)
@@ -203,6 +234,8 @@ func obtenerCPUDisponibleParaEjecucion() (string, *utils.HTTPClient) {
 		cpusDisponibles[nombre] = cliente
 	}
 	cpuClientsMutex.Unlock()
+
+	utils.InfoLog.Info("STS: CPUs registradas obtenidas", "total", len(cpusDisponibles))
 
 	if len(cpusDisponibles) == 0 {
 		if time.Since(ultimoLogCPUNoDisponible) > 5*time.Second {
@@ -214,16 +247,30 @@ func obtenerCPUDisponibleParaEjecucion() (string, *utils.HTTPClient) {
 
 	// 2. Verificar cuáles de ellas no están en la cola de ejecución (lectura segura)
 	execMutex.Lock()
+	utils.InfoLog.Info("STS: Verificando CPUs en ejecución", "total_en_exec", len(colaExec))
+	for cpuNombre, pcb := range colaExec {
+		if pcb != nil {
+			utils.InfoLog.Info("STS: CPU ocupada", "nombre", cpuNombre, "pid", pcb.PID)
+		} else {
+			utils.InfoLog.Info("STS: CPU en colaExec pero con PCB nil", "nombre", cpuNombre)
+		}
+	}
+	execMutex.Unlock()
+
+	execMutex.Lock()
 	defer execMutex.Unlock()
 
 	for nombre, cliente := range cpusDisponibles {
 		if _, ocupada := colaExec[nombre]; !ocupada {
-			utils.InfoLog.Debug("STS: Se encontró CPU libre", "nombre", nombre)
+			utils.InfoLog.Info("STS: Se encontró CPU libre", "nombre", nombre)
 			return nombre, cliente // Encontramos una CPU libre
+		} else {
+			utils.InfoLog.Info("STS: CPU está ocupada", "nombre", nombre)
 		}
 	}
 
 	// 3. Si llegamos aquí, todas las CPUs registradas están ocupadas.
+	utils.InfoLog.Info("STS: Todas las CPUs están ocupadas")
 	return "", nil
 }
 
@@ -252,6 +299,9 @@ func seleccionarProcesoSTS() *PCB {
 
 // seleccionarFIFO implementa selección FIFO
 func seleccionarFIFO() *PCB {
+	if len(colaReady) == 0 {
+		return nil
+	}
 	return colaReady[0]
 }
 
@@ -380,10 +430,14 @@ func desalojarProcesoActual(pcb *PCB) {
 
 // EnviarProcesoCPU envía un PCB a la CPU para su ejecución
 func EnviarProcesoCPU(pcb *PCB, nombreCPU string) bool {
+	utils.InfoLog.Info("EnviarProcesoCPU: Iniciando envío", "pid", pcb.PID, "cpu", nombreCPU)
+
 	// Obtener cliente para esta CPU
 	cpuClientsMutex.Lock()
 	cpuClient, existe := cpuClients[nombreCPU]
 	cpuClientsMutex.Unlock()
+
+	utils.InfoLog.Info("EnviarProcesoCPU: Cliente CPU obtenido", "pid", pcb.PID, "cpu", nombreCPU, "existe", existe)
 
 	if !existe {
 		utils.ErrorLog.Error("CPU no encontrada", "cpu_id", nombreCPU)
@@ -400,8 +454,13 @@ func EnviarProcesoCPU(pcb *PCB, nombreCPU string) bool {
 	utils.InfoLog.Info(fmt.Sprintf("## (%d) - Enviando proceso a CPU", pcb.PID),
 		"pc", pcb.PC, "cpu", nombreCPU)
 
+	utils.InfoLog.Info("EnviarProcesoCPU: Realizando solicitud HTTP", "pid", pcb.PID, "cpu", nombreCPU)
+
 	// Enviar solicitud a la CPU
 	respuesta, err := cpuClient.EnviarHTTPOperacion("EJECUTAR_PROCESO", datos)
+
+	utils.InfoLog.Info("EnviarProcesoCPU: Solicitud HTTP completada", "pid", pcb.PID, "cpu", nombreCPU, "error", err != nil)
+
 	if err != nil {
 		utils.ErrorLog.Error("Error enviando proceso a CPU",
 			"pid", pcb.PID,
@@ -426,35 +485,91 @@ func EnviarProcesoCPU(pcb *PCB, nombreCPU string) bool {
 		// Actualizaciones según la respuesta
 		utils.InfoLog.Debug("Respuesta de CPU recibida", "respuesta", fmt.Sprintf("%+v", respuestaMap))
 
-		// Actualizar PC
+		// Actualizar PC y marcar si fue actualizado por CPU
+		pcActualizadoPorCPU := false
 		if nuevoPC, hayPC := respuestaMap["pc"].(float64); hayPC {
 			pcb.PC = int(nuevoPC)
+			pcActualizadoPorCPU = true
 			utils.InfoLog.Debug("PC actualizado desde respuesta CPU", "pid", pcb.PID, "nuevo_pc", pcb.PC)
 		}
 
-		// Verificar si es una llamada al sistema (syscall)
-		if esSyscall, ok := respuestaMap["syscall"].(bool); ok && esSyscall {
-			utils.InfoLog.Info(fmt.Sprintf("## (%d) - Syscall detectada", pcb.PID))
+		// Verificar motivo de retorno para syscalls
+		if motivoRetorno, hayMotivo := respuestaMap["motivo_retorno"].(string); hayMotivo {
+			utils.InfoLog.Info(fmt.Sprintf("## (%d) - Motivo de retorno recibido", pcb.PID), "motivo", motivoRetorno)
 
-			// Actualizar estado del proceso
-			pcb.CambiarEstado(EstadoBlocked)
+			switch motivoRetorno {
+			case "SYSCALL_INIT_PROC":
+				// Procesar creación de nuevo proceso
+				if parametros, ok := respuestaMap["parametros"].(map[string]interface{}); ok {
+					archivo, _ := parametros["archivo"].(string)
+					tamano, _ := parametros["tamano"].(float64)
 
-			// Obtener parámetros de la syscall
-			if parametros, ok := respuestaMap["parametros"].(map[string]interface{}); ok {
-				// Procesar syscall según su tipo
-				if tipo, hayTipo := parametros["tipo"].(string); hayTipo {
-					utils.InfoLog.Info(fmt.Sprintf("## (%d) - Procesando syscall", pcb.PID), "tipo", tipo)
+					utils.InfoLog.Info(fmt.Sprintf("## (%d) - Procesando INIT_PROC", pcb.PID), "archivo", archivo, "tamaño", int(tamano))
 
-					// En lugar de usar un manejador dinámico, simplemente finalizamos el proceso
-					// con un mensaje que indica que se recibió una syscall
-					utils.InfoLog.Info(fmt.Sprintf("## (%d) - Recibida syscall %s", pcb.PID, tipo))
-					FinalizarProceso(pcb, fmt.Sprintf("SYSCALL_%s", tipo))
+					// Crear nuevo proceso
+					nuevoPCB := NuevoPCB(-1, int(tamano))
+					nuevoPCB.NombreArchivo = archivo
+
+					utils.InfoLog.Info(fmt.Sprintf("## (%d) Se crea el proceso - Estado: NEW", nuevoPCB.PID))
+					AgregarProcesoANew(nuevoPCB)
 				}
+
+				// El proceso que hizo INIT_PROC continúa en EXEC (no cambia de estado)
+				// Incrementar PC ya que el proceso continúa ejecutando
+				pcb.PC++
+				utils.InfoLog.Info(fmt.Sprintf("## (%d) - PC incrementado después de INIT_PROC", pcb.PID), "nuevo_pc", pcb.PC)
+				return true
+
+			case "SYSCALL_IO":
+				// Mover proceso a BLOCKED para operación de I/O
+				utils.InfoLog.Info(fmt.Sprintf("## (%d) - Procesando IO", pcb.PID))
+				pcb.CambiarEstado(EstadoBlocked)
+
+				if parametros, ok := respuestaMap["parametros"].(map[string]interface{}); ok {
+					dispositivo, _ := parametros["dispositivo"].(string)
+					tiempo, _ := parametros["tiempo"].(float64)
+
+					// Seleccionar dispositivo IO real usando balanceador de carga
+					dispositivoReal := SeleccionarDispositivoIO(dispositivo, pcb.PID)
+
+					// Mover proceso a BLOCKED con el dispositivo real seleccionado
+					MoverProcesoABlocked(pcb, fmt.Sprintf("IO_%s", dispositivoReal))
+
+					// Enviar solicitud IO al dispositivo real seleccionado
+					go EnviarSolicitudIO(pcb, dispositivoReal, int(tiempo))
+				}
+				return true
+
+			case "SYSCALL_DUMP_MEMORY":
+				// Procesar dump de memoria
+				utils.InfoLog.Info(fmt.Sprintf("## (%d) - Procesando DUMP_MEMORY", pcb.PID))
+				pcb.CambiarEstado(EstadoBlocked)
+				MoverProcesoABlocked(pcb, "DUMP_MEMORY")
+				return true
+
+			case "EXIT":
+    			utils.InfoLog.Info(fmt.Sprintf("## (%d) - Proceso solicita EXIT", pcb.PID))
+    			FinalizarProceso(pcb, "EXIT")
+    			utils.InfoLog.Info(fmt.Sprintf("## (%d) - RETORNANDO DESPUÉS DE EXIT", pcb.PID)) // ← AGREGAR ESTO
+    			return true
+
+			case "ERROR":
+				// Error en la ejecución
+				utils.ErrorLog.Error("Error en ejecución de proceso", "pid", pcb.PID)
+				FinalizarProceso(pcb, "ERROR")
+				return true
 			}
-			return true
 		}
 
-		// Si no es una syscall, considerar el proceso como completado normalmente
+		// Si no hay motivo específico de retorno, el proceso continúa ejecutando
+		// Solo incrementar PC si no fue actualizado por CPU (ej: para GOTO)
+		if !pcActualizadoPorCPU {
+			pcb.PC++
+		}
+		utils.InfoLog.Info(fmt.Sprintf("## (%d) - Continuando ejecución", pcb.PID), "nuevo_pc", pcb.PC)
+
+		// El proceso sigue en EXEC, enviarlo de vuelta a la CPU para la siguiente instrucción
+		// Esto se maneja en la goroutine despacharYProcesarCPU que llamará nuevamente a EnviarProcesoCPU
 		return true
 	}
 

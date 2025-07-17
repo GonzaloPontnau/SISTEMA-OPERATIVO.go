@@ -4,9 +4,11 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 
 	"github.com/sisoputnfrba/tp-2025-1c-LosCuervosXeneizes/utils"
 )
@@ -60,7 +62,17 @@ func main() {
 	input = strings.TrimSpace(input)
 
 	utils.InfoLog.Info("Enter presionado, iniciando planificadores de largo y corto plazo...")
+	fmt.Println("Planificadores iniciados. Sistema funcionando...")
+
 	iniciarPlanificadores()
 
-	select {}
+	// Configurar manejo de señales para permitir terminación limpia con Ctrl+C
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+
+	// Esperar señal de terminación
+	<-sigChan
+	utils.InfoLog.Info("Crtl+C. Finalizando Kernel...")
+	fmt.Println("\nKernel finalizando...")
+	os.Exit(0)
 }

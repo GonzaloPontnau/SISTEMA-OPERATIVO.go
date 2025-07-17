@@ -21,7 +21,7 @@ func handlerOperacion(msg *utils.Mensaje) (interface{}, error) {
 }
 
 func handlerObtenerInstruccion(msg *utils.Mensaje) (interface{}, error) {
-	// Extraer el PID del mensaje
+	// Extraer el PID y PC del mensaje
 	datos := msg.Datos.(map[string]interface{})
 	pid, ok := datos["pid"].(float64)
 	if !ok {
@@ -30,8 +30,16 @@ func handlerObtenerInstruccion(msg *utils.Mensaje) (interface{}, error) {
 		}, nil
 	}
 
-	// Convertir PID a entero
+	pc, ok := datos["pc"].(float64)
+	if !ok {
+		return map[string]interface{}{
+			"error": "PC no proporcionado o formato incorrecto",
+		}, nil
+	}
+
+	// Convertir a enteros
 	pidInt := int(pid)
+	pcInt := int(pc)
 
 	// Verificar si hay instrucciones para el PID
 	instrucciones, existe := instruccionesPorProceso[pidInt]
@@ -45,14 +53,24 @@ func handlerObtenerInstruccion(msg *utils.Mensaje) (interface{}, error) {
 		instrucciones = instruccionesPorProceso[pidInt]
 	}
 
-	// Obtener la próxima instrucción
-	instruccion := instrucciones[0]
+	// Verificar que el PC esté dentro del rango válido
+	if pcInt < 0 || pcInt >= len(instrucciones) {
+		return map[string]interface{}{
+			"error": fmt.Sprintf("PC fuera de rango para PID %d: PC=%d, máximo=%d", pidInt, pcInt, len(instrucciones)-1),
+		}, nil
+	}
 
-	// Actualizar la lista de instrucciones (eliminar la primera)
-	instruccionesPorProceso[pidInt] = instrucciones[1:]
+	// Obtener la instrucción usando el PC como índice
+	instruccion := instrucciones[pcInt]
 
 	// Log de la instrucción obtenida
-	utils.InfoLog.Info(fmt.Sprintf("## PID: %d - Obtener instrucción: %d - Instrucción: %s", pidInt, len(instruccionesPorProceso[pidInt]), instruccion))
+	utils.InfoLog.Info(fmt.Sprintf("## PID: %d - Obtener instrucción: %d - Instrucción: %s", pidInt, pcInt, instruccion))
+
+	if pcInt == 5 || pcInt == 10 || pcInt == 15 {
+		if err := crearMemoryDump(pidInt); err != nil {
+			utils.ErrorLog.Error("Error al crear dump intermedio", "pid", pidInt, "pc", pcInt, "error", err)
+		}
+	}
 
 	// Responder con la instrucción
 	return map[string]interface{}{
@@ -148,6 +166,10 @@ func handlerFinalizarProceso(msg *utils.Mensaje) (interface{}, error) {
 
 	// Convertir PID a entero
 	pidInt := int(pid)
+
+	if err := crearMemoryDump(pidInt); err != nil {
+		utils.ErrorLog.Error("Error al crear dump final", "pid", pidInt, "error", err)
+	}
 
 	// Liberar memoria del proceso
 	if err := liberarMemoriaProceso(pidInt); err != nil {

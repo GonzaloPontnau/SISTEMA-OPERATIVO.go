@@ -44,7 +44,13 @@ func cargarInstrucciones(pid int) error {
 }
 
 func copiarPseudocodigo(origen string, destino string) error {
-	input, err := os.ReadFile(origen)
+	// Si el origen no incluye la ruta scripts/, agregarla
+	rutaCompleta := origen
+	if !strings.Contains(origen, string(filepath.Separator)) && !strings.HasPrefix(origen, "scripts") {
+		rutaCompleta = filepath.Join("scripts", origen)
+	}
+
+	input, err := os.ReadFile(rutaCompleta)
 	if err != nil {
 		return err
 	}
@@ -54,7 +60,7 @@ func copiarPseudocodigo(origen string, destino string) error {
 		return err
 	}
 
-	utils.InfoLog.Info("Archivo de pseudocódigo copiado", "origen", origen, "destino", destino)
+	utils.InfoLog.Info("Archivo de pseudocódigo copiado", "origen", rutaCompleta, "destino", destino)
 	return nil
 }
 
@@ -70,6 +76,10 @@ func suspenderProceso(pid int) error {
 	tabla, existeTabla := tablasPaginas[pid]
 	if !existeTabla {
 		return fmt.Errorf("el proceso %d no tiene tabla de páginas", pid)
+	}
+
+	if err := crearMemoryDump(pid); err != nil {
+		utils.ErrorLog.Error("Error al crear dump antes de SWAP", "pid", pid, "error", err)
 	}
 
 	// Para cada marco, mover su contenido a SWAP

@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 
 	"github.com/sisoputnfrba/tp-2025-1c-LosCuervosXeneizes/utils"
 )
@@ -24,23 +23,20 @@ var (
 )
 
 func main() {
-	// Verificar si se proporcionó el nombre del dispositivo IO
-	if len(os.Args) < 2 {
-		fmt.Println("Uso: ./io <nombre_dispositivo> [-c ruta_configuracion]")
+	// Verificar argumentos mínimos
+	if len(os.Args) < 3 {
+		fmt.Println("Uso: ./io <nombre_dispositivo> <ruta_configuracion>")
+		fmt.Println("Ejemplo: ./io DISCO configs/io1-config.json")
 		os.Exit(1)
 	}
 
 	nombreDispositivo := os.Args[1]
+	rutaConfig := os.Args[2]
 
-	// Path de configuración por defecto
-	rutaConfig := filepath.Join("configs", "io-config.json")
-
-	// Verificar si se especificó una ruta de configuración personalizada
-	for i := 2; i < len(os.Args); i++ {
-		if (os.Args[i] == "-c" || os.Args[i] == "--config") && i+1 < len(os.Args) {
-			rutaConfig = os.Args[i+1]
-			break
-		}
+	// Verificar que el archivo de configuración existe
+	if _, err := os.Stat(rutaConfig); os.IsNotExist(err) {
+		fmt.Printf("Error: El archivo de configuración '%s' no existe\n", rutaConfig)
+		os.Exit(1)
 	}
 
 	// Inicializar módulo
@@ -63,15 +59,20 @@ func inicializarModulo(rutaConfig string, nombreDispositivo string) {
 	// Actualizar nivel de log con el de la configuración
 	utils.InicializarLogger(config.LogLevel, "IO")
 
-	utils.InfoLog.Info("Módulo IO inicializado", "nombre", nombreDispositivo)
+	utils.InfoLog.Info("Módulo IO inicializado",
+		"nombre", nombreDispositivo,
+		"config", rutaConfig,
+		"ip", config.IPIO,
+		"puerto", config.PortIO)
 
 	// Registrar handlers
 	modulo.RegistrarHandler(fmt.Sprintf("%d", utils.MensajeHandshake), "handshake", handlerHandshake)
 	modulo.RegistrarHandler(fmt.Sprintf("%d", utils.MensajeOperacion), "EJECUTAR_PROCESO", handlerOperacion)
+	modulo.RegistrarHandler(fmt.Sprintf("%d", utils.MensajeOperacion), "IO_REQUEST", handlerOperacion)
 	modulo.RegistrarHandler(fmt.Sprintf("%d", utils.MensajeEjecutar), "default", handlerOperacion)
 
 	// Iniciar servidor
-	modulo.IniciarServidorAutoPuerto(config.IPIO)
+	modulo.IniciarServidor(config.IPIO, config.PortIO)
 
 	// Crear y conectar cliente a Kernel
 	modulo.CrearCliente("Kernel", config.IPKernel, config.PortKernel)
