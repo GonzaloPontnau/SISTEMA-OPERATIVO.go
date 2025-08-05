@@ -3,7 +3,7 @@ package utils
 import (
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"net"
 	"net/http"
 )
@@ -27,16 +27,6 @@ func NewHTTPServer(ip string, puerto int, nombre string) *HTTPServer {
 		IP:       ip,
 		Puerto:   puerto,
 		Nombre:   nombre,
-		handlers: make(map[int]HTTPHandlerFunc),
-	}
-}
-
-func NewHTTPServerConListener(ip string, puerto int, nombre string, listener net.Listener) *HTTPServer {
-	return &HTTPServer{
-		IP:       ip,
-		Puerto:   puerto,
-		Nombre:   nombre,
-		Listener: listener,
 		handlers: make(map[int]HTTPHandlerFunc),
 	}
 }
@@ -86,27 +76,20 @@ func (s *HTTPServer) Start() error {
 		json.NewEncoder(w).Encode(map[string]string{"status": "ok", "module": s.Nombre})
 	})
 
-	// Si ya tenés Listener asignado (caso IO)
+	// Si ya tiene Listener asignado (caso IO)
 	if s.Listener != nil {
-		log.Printf("Servidor HTTP %s escuchando en %s\n", s.Nombre, s.Listener.Addr().String())
+		slog.Info("Servidor HTTP escuchando", "módulo", s.Nombre, "dirección", s.Listener.Addr().String())
 		return http.Serve(s.Listener, mux)
 	}
 
-	// Caso normal para Kernel / CPU / Memoria
+	// Caso normal para otros módulos
 	address := fmt.Sprintf("%s:%d", s.IP, s.Puerto)
 	s.server = &http.Server{
 		Addr:    address,
 		Handler: mux,
 	}
 
-	log.Printf("Servidor HTTP %s escuchando en %s\n", s.Nombre, address)
+	slog.Info("Servidor HTTP escuchando", "módulo", s.Nombre, "dirección", address)
 	return s.server.ListenAndServe()
 }
 
-// Stop detiene el servidor HTTP
-func (s *HTTPServer) Stop() error {
-	if s.server != nil {
-		return s.server.Close()
-	}
-	return nil
-}

@@ -5,22 +5,16 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
 	"time"
 )
 
-// TiposMensaje define los tipos de mensajes posibles
-const (
-	MensajeHandshake = 1
-	MensajeOperacion = 2
-	MensajeRespuesta = 3
-)
 
 // Mensaje representa un mensaje genérico entre módulos
 type Mensaje struct {
 	Tipo      int         `json:"tipo"`
-	Operacion string      `json:"operacion"` // Nuevo campo para especificar el tipo de operación
+	Operacion string      `json:"operacion"`
 	Origen    string      `json:"origen"`
 	Datos     interface{} `json:"datos"`
 }
@@ -80,6 +74,7 @@ func (c *HTTPClient) EnviarHTTPMensaje(tipo int, operacion string, datos interfa
 	return resultado, nil
 }
 
+
 // VerificarConexion verifica si un módulo está disponible
 func (c *HTTPClient) VerificarConexion() error {
 	resp, err := c.client.Get(fmt.Sprintf("%s/health", c.BaseURL))
@@ -97,13 +92,8 @@ func (c *HTTPClient) VerificarConexion() error {
 		return fmt.Errorf("error al decodificar respuesta de verificación: %v", err)
 	}
 
-	log.Printf("Conexión con %s (%s) verificada correctamente", c.BaseURL, result["module"])
+	slog.Info("Conexión verificada", "destino", c.BaseURL, "módulo", result["module"])
 	return nil
-}
-
-// EnviarHTTPHandshake envía un mensaje de handshake a través de HTTP
-func (c *HTTPClient) EnviarHTTPHandshake(datos map[string]interface{}) (interface{}, error) {
-	return c.EnviarHTTPMensaje(MensajeHandshake, "handshake", datos)
 }
 
 // EnviarHTTPOperacion envía un mensaje de operación a través de HTTP

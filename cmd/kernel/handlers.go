@@ -4,57 +4,44 @@ import (
 	"fmt"
 	"strconv"
 
-	"github.com/sisoputnfrba/tp-2025-1c-LosCuervosXeneizes/utils"
+	"github.com/GonzaloPontnau/SISTEMA-OPERATIVO.go.git/utils"
 )
 
-// HandlerHandshake simplificado y optimizado
+// HandlerHandshake optimizado
 func HandlerHandshake(msg *utils.Mensaje) (interface{}, error) {
-	// DEBUG: Log de todo lo que llega
-	utils.InfoLog.Info("HandlerHandshake recibido", "origen", msg.Origen, "datos", fmt.Sprintf("%v", msg.Datos))
+	utils.InfoLog.Info("Handshake recibido", "origen", msg.Origen)
 
 	datosMap, ok := msg.Datos.(map[string]interface{})
 	if !ok {
-		utils.ErrorLog.Error("HandlerHandshake: Datos inválidos", "datos", fmt.Sprintf("%v", msg.Datos))
+		utils.ErrorLog.Error("Datos inválidos en handshake", "datos", fmt.Sprintf("%v", msg.Datos))
 		return map[string]interface{}{"status": "ERROR", "message": "Datos inválidos"}, nil
 	}
 
-	// Procesar en paralelo cuando sea posible
-	resultChan := make(chan interface{}, 1)
+	// Procesar IO
+	if respuesta, manejado := ManejadorRegistroIO(msg.Origen, datosMap); manejado {
+		utils.InfoLog.Info("Procesado como dispositivo IO", "origen", msg.Origen)
+		return respuesta, nil
+	}
 
-	go func() {
-		// Verificar IO primero
-		if respuesta, manejado := ManejadorRegistroIO(msg.Origen, datosMap); manejado {
-			utils.InfoLog.Info("HandlerHandshake: Procesado como IO", "origen", msg.Origen)
-			resultChan <- respuesta
-			return
-		}
+	// Procesar CPU
+	if esCPU(msg.Origen, datosMap) {
+		utils.InfoLog.Info("Procesando como CPU", "origen", msg.Origen)
+		respuesta, _ := manejarRegistroCPU(msg.Origen, datosMap)
+		return respuesta, nil
+	}
 
-		// Verificar CPU
-		esCPUResult := esCPU(msg.Origen, datosMap)
-		utils.InfoLog.Info("HandlerHandshake: Verificando si es CPU", "origen", msg.Origen, "esCPU", esCPUResult)
-
-		if esCPUResult {
-			utils.InfoLog.Info("HandlerHandshake: Procesando como CPU", "origen", msg.Origen)
-			respuesta, _ := manejarRegistroCPU(msg.Origen, datosMap)
-			resultChan <- respuesta
-			return
-		}
-
-		utils.InfoLog.Info("HandlerHandshake: Handshake genérico", "origen", msg.Origen)
-		resultChan <- map[string]interface{}{"status": "OK", "message": "Handshake recibido"}
-	}()
-
-	return <-resultChan, nil
+	utils.InfoLog.Info("Handshake genérico completado", "origen", msg.Origen)
+	return map[string]interface{}{"status": "OK", "message": "Handshake recibido"}, nil
 }
 
-// esCPU simplificado con evaluación corta
+// esCPU simplificado
 func esCPU(origen string, datos map[string]interface{}) bool {
 	return origen == "CPU" ||
 		datos["tipo"] == "CPU" ||
 		datos["nombre"] == "CPU"
 }
 
-// manejarRegistroCPU optimizado con mejor manejo de tipos
+// manejarRegistroCPU optimizado
 func manejarRegistroCPU(origen string, datos map[string]interface{}) (interface{}, error) {
 	ip, ipOk := datos["ip"].(string)
 	if !ipOk {
@@ -66,22 +53,21 @@ func manejarRegistroCPU(origen string, datos map[string]interface{}) (interface{
 		return map[string]interface{}{"status": "ERROR", "message": "Puerto inválido"}, nil
 	}
 
-	// Usar el identificador específico de la CPU en lugar del origen genérico
-	identificadorCPU := origen // Por defecto, usar el origen
+	// Usar identificador específico de la CPU
+	identificadorCPU := origen
 	if id, existe := datos["identificador"].(string); existe && id != "" {
 		identificadorCPU = id
 	}
 
-	// El registro DEBE ser síncrono para evitar race conditions con el planificador.
+	// Registro síncrono
 	registrarCPU(identificadorCPU, ip, puerto)
 
-	// Log original mantenido exactamente igual
-	utils.InfoLog.Info(fmt.Sprintf("CPU %s registrada", identificadorCPU), "ip", ip, "puerto", puerto)
+	utils.InfoLog.Info("CPU registrada", "identificador", identificadorCPU, "ip", ip, "puerto", puerto)
 
 	return map[string]interface{}{"status": "OK", "message": fmt.Sprintf("CPU %s registrada", identificadorCPU)}, nil
 }
 
-// extraerPuerto helper para simplificar conversión de tipos
+// extraerPuerto helper
 func extraerPuerto(puerto interface{}) (int, bool) {
 	switch p := puerto.(type) {
 	case float64:
@@ -100,7 +86,7 @@ func HandlerOperacion(msg *utils.Mensaje) (interface{}, error) {
 	return procesarOperacionEspecifica(msg)
 }
 
-// procesarOperacionEspecifica optimizado con pipeline de procesamiento
+// procesarOperacionEspecifica con pipeline optimizado
 func procesarOperacionEspecifica(msg *utils.Mensaje) (interface{}, error) {
 	datos, ok := msg.Datos.(map[string]interface{})
 	if !ok {
@@ -109,15 +95,12 @@ func procesarOperacionEspecifica(msg *utils.Mensaje) (interface{}, error) {
 
 	pid, pidOk := extraerPID(datos["pid"])
 	if !pidOk {
-		// Si no hay PID, podría ser una operación que no lo requiere
-		// o un error. Por ahora, asumimos que la mayoría lo necesita.
-		// NOTA: El handshake de IO no pasa por aquí.
 		if _, esFinIO := datos["evento"].(string); !esFinIO {
 			return map[string]interface{}{"status": "ERROR", "mensaje": "PID inválido o faltante"}, nil
 		}
 	}
 
-	// Pipeline de procesamiento optimizado
+	// Pipeline de procesamiento
 	handlers := []func(int, map[string]interface{}) (interface{}, bool){
 		ProcesarRetornoCPU,
 		func(pid int, datos map[string]interface{}) (interface{}, bool) {
@@ -138,43 +121,37 @@ func procesarOperacionEspecifica(msg *utils.Mensaje) (interface{}, error) {
 	return map[string]interface{}{"status": "ERROR", "mensaje": "Operación desconocida o no manejada"}, nil
 }
 
-// ProcesarRetornoCPU maneja el retorno de un proceso desde la CPU que no sea finalización.
+// ProcesarRetornoCPU maneja retorno de procesos desde CPU
 func ProcesarRetornoCPU(pid int, datos map[string]interface{}) (interface{}, bool) {
 	motivo, ok := datos["motivo_retorno"].(string)
 	if !ok {
-		return nil, false // No es un retorno de CPU o no tiene motivo
+		return nil, false
 	}
 
 	pcb := BuscarPCBPorPID(pid)
 	if pcb == nil {
-		utils.ErrorLog.Warn("Se recibió retorno de CPU para un PID inexistente", "pid", pid)
+		utils.ErrorLog.Warn("Retorno de CPU para PID inexistente", "pid", pid)
 		return map[string]interface{}{"status": "ERROR", "mensaje": "PID no encontrado"}, true
 	}
 
-	// Liberar la CPU
 	liberarCPU(pid)
 
 	switch motivo {
 	case "INTERRUPTED":
-		utils.InfoLog.Info(fmt.Sprintf("## (%d) - Proceso interrumpido por Kernel", pid))
+		utils.InfoLog.Info("Proceso interrumpido por Kernel", "pid", pid)
 		MoverProcesoAReady(pcb)
-		go despacharProcesoSiCorresponde() // Intentar despachar otro proceso si hay CPU libre
+		go despacharProcesoSiCorresponde()
 		return map[string]interface{}{"status": "OK", "message": "Proceso movido a READY por interrupción"}, true
 
 	case "SYSCALL_IO":
-		// La lógica de IO ya está en ProcesarSolicitudIO.
-		// Aquí solo actuamos si el evento es específico de retorno de CPU.
-		// Podríamos unificarlo, pero por ahora lo dejamos separado.
-		// Este caso es manejado por ProcesarSolicitudIO.
 		return nil, false
 
 	default:
-		// Otros motivos como EXIT o ERROR son manejados por procesarFinalizacionSiCorresponde
 		return nil, false
 	}
 }
 
-// liberarCPU encuentra y libera la CPU que estaba ejecutando un proceso.
+// liberarCPU encuentra y libera la CPU que ejecutaba un proceso
 func liberarCPU(pid int) string {
 	execMutex.Lock()
 	defer execMutex.Unlock()
@@ -187,13 +164,15 @@ func liberarCPU(pid int) string {
 			break
 		}
 	}
+
 	if cpuLiberada != "" {
-		utils.InfoLog.Debug("CPU liberada", "cpu", cpuLiberada, "pid", pid)
+		utils.InfoLog.Info("CPU liberada", "cpu", cpuLiberada, "pid", pid)
 	}
+
 	return cpuLiberada
 }
 
-// extraerPID helper simplificado
+// extraerPID helper
 func extraerPID(pid interface{}) (int, bool) {
 	if pidFloat, ok := pid.(float64); ok {
 		return int(pidFloat), true
@@ -201,22 +180,12 @@ func extraerPID(pid interface{}) (int, bool) {
 	return 0, false
 }
 
-// actualizarPCDesdeCPU función asíncrona para actualización de PC
-func actualizarPCDesdeCPU(pid int, datos map[string]interface{}) {
-	if pcb := BuscarPCBPorPID(pid); pcb != nil {
-		if pcActualizado, ok := datos["pc_actualizado"].(float64); ok {
-			pcb.PC = int(pcActualizado)
-		}
-	}
-}
-
-// procesarFinalizacionSiCorresponde simplificado con detección mejorada
+// procesarFinalizacionSiCorresponde con detección optimizada
 func procesarFinalizacionSiCorresponde(pid int, datos map[string]interface{}) (interface{}, bool) {
 	evento, _ := datos["evento"].(string)
 	motivoRetorno, _ := datos["motivo_retorno"].(string)
 
 	if evento == "PROCESO_TERMINADO" || motivoRetorno == "EXIT" || motivoRetorno == "ERROR" {
-		// Liberar la CPU antes de finalizar
 		liberarCPU(pid)
 		respuesta, _ := procesarFinalizacion(pid, datos)
 		return respuesta, true
@@ -224,7 +193,7 @@ func procesarFinalizacionSiCorresponde(pid int, datos map[string]interface{}) (i
 	return nil, false
 }
 
-// procesarFinalizacion optimizado con operaciones paralelas
+// procesarFinalizacion optimizado
 func procesarFinalizacion(pid int, datos map[string]interface{}) (interface{}, error) {
 	pcb := BuscarPCBPorPID(pid)
 	if pcb == nil {
@@ -232,19 +201,18 @@ func procesarFinalizacion(pid int, datos map[string]interface{}) (interface{}, e
 	}
 
 	motivo := determinarMotivo(datos)
-
 	FinalizarProceso(pcb, motivo)
 
 	// Operaciones post-finalización en paralelo
 	go func() {
-		intentarAdmitirProceso() 
+		intentarAdmitirProceso()
 		despacharProcesoSiCorresponde()
 	}()
 
 	return map[string]interface{}{"status": "OK", "mensaje": "Proceso finalizado"}, nil
 }
 
-// determinarMotivo helper para lógica de motivo
+// determinarMotivo helper
 func determinarMotivo(datos map[string]interface{}) string {
 	if m, ok := datos["motivo"].(string); ok {
 		return m

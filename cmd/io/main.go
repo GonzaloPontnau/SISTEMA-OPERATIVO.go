@@ -4,22 +4,12 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/sisoputnfrba/tp-2025-1c-LosCuervosXeneizes/utils"
+	"github.com/GonzaloPontnau/SISTEMA-OPERATIVO.go.git/utils"
 )
 
-// Config representa la configuración específica del módulo IO
-type IOConfig struct {
-	IPIO        string `json:"IP_IO"`
-	PortIO      int    `json:"PUERTO_IO"`
-	IPKernel    string `json:"IP_KERNEL"`
-	PortKernel  int    `json:"PUERTO_KERNEL"`
-	LogLevel    string `json:"LOG_LEVEL"`
-	RetardoBase int    `json:"RETARDO_BASE"` // Retardo base para operaciones
-}
-
 var (
-	modulo *utils.Modulo
-	config *IOConfig
+	modulo       *utils.Modulo
+	kernelClient *utils.HTTPClient
 )
 
 func main() {
@@ -42,7 +32,7 @@ func main() {
 	// Inicializar módulo
 	inicializarModulo(rutaConfig, nombreDispositivo)
 
-	// Bloquear ejecución
+	// Mantener vivo el proceso
 	select {}
 }
 
@@ -51,38 +41,51 @@ func inicializarModulo(rutaConfig string, nombreDispositivo string) {
 	modulo = utils.NuevoModulo("IO", rutaConfig)
 
 	// Inicializar logger
-	utils.InicializarLogger("INFO", "IO") // Nivel provisional hasta cargar config
+	loggerName := fmt.Sprintf("IO-%s", nombreDispositivo)
+	utils.InicializarLogger("INFO", loggerName)
 
 	// Cargar configuración
 	config = utils.CargarConfiguracion[IOConfig](rutaConfig)
 
-	// Actualizar nivel de log con el de la configuración
-	utils.InicializarLogger(config.LogLevel, "IO")
+	// Actualizar nivel de log
+	utils.InicializarLogger(config.LogLevel, loggerName)
 
 	utils.InfoLog.Info("Módulo IO inicializado",
-		"nombre", nombreDispositivo,
-		"config", rutaConfig,
+		"dispositivo", nombreDispositivo,
+		"config_path", rutaConfig,
 		"ip", config.IPIO,
-		"puerto", config.PortIO)
+		"puerto", config.PortIO,
+		"nivel_log", config.LogLevel)
 
 	// Registrar handlers
-	modulo.RegistrarHandler(fmt.Sprintf("%d", utils.MensajeHandshake), "handshake", handlerHandshake)
-	modulo.RegistrarHandler(fmt.Sprintf("%d", utils.MensajeOperacion), "EJECUTAR_PROCESO", handlerOperacion)
-	modulo.RegistrarHandler(fmt.Sprintf("%d", utils.MensajeOperacion), "IO_REQUEST", handlerOperacion)
-	modulo.RegistrarHandler(fmt.Sprintf("%d", utils.MensajeEjecutar), "default", handlerOperacion)
+	registrarHandlers()
 
 	// Iniciar servidor
 	modulo.IniciarServidor(config.IPIO, config.PortIO)
+	utils.InfoLog.Info("Servidor iniciado", "ip", config.IPIO, "puerto", config.PortIO)
 
-	// Crear y conectar cliente a Kernel
-	modulo.CrearCliente("Kernel", config.IPKernel, config.PortKernel)
+	// Crear cliente HTTP directamente
+	kernelClient = utils.NewHTTPClient(config.IPKernel, config.PortKernel, "IO->Kernel")
+	utils.InfoLog.Info("Cliente HTTP creado")
 
-	// Intentar conectar con el Kernel de forma asíncrona
+	// Datos para handshake
 	datosHandshake := map[string]interface{}{
 		"nombre": nombreDispositivo,
 		"tipo":   "IO" + nombreDispositivo,
 		"ip":     config.IPIO,
 		"puerto": config.PortIO,
 	}
-	go modulo.ConectarCliente("Kernel", 2, datosHandshake)
+
+	// Conectar con Kernel
+	go conectarConReintentos(kernelClient, "Kernel", datosHandshake)
+	utils.InfoLog.Info("Conectando a Kernel", "ip", config.IPKernel, "puerto", config.PortKernel)
+}
+
+func registrarHandlers() {
+	modulo.RegistrarHandler(fmt.Sprintf("%d", utils.MensajeHandshake), "handshake", handlerHandshake)
+	modulo.RegistrarHandler(fmt.Sprintf("%d", utils.MensajeOperacion), "EJECUTAR_PROCESO", handlerOperacion)
+	modulo.RegistrarHandler(fmt.Sprintf("%d", utils.MensajeOperacion), "IO_REQUEST", handlerOperacion)
+	modulo.RegistrarHandler(fmt.Sprintf("%d", utils.MensajeEjecutar), "default", handlerOperacion)
+
+	utils.InfoLog.Info("Handlers registrados correctamente")
 }

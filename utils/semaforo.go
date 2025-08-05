@@ -17,7 +17,7 @@ func NewSemaforo(capacidad int) *Semaforo {
 
 // Wait (P) decrementa el semáforo, bloquea si es 0
 func (s *Semaforo) Wait() {
-	s.c <- struct{}{} // Envía un valor, bloquea si está lleno
+	s.c <- struct{}{}
 }
 
 // Signal (V) incrementa el semáforo

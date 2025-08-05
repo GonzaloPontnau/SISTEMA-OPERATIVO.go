@@ -3,7 +3,7 @@ package main
 import (
 	"fmt"
 
-	"github.com/sisoputnfrba/tp-2025-1c-LosCuervosXeneizes/utils"
+	"github.com/GonzaloPontnau/SISTEMA-OPERATIVO.go.git/utils"
 )
 
 type Configuracion struct {
@@ -16,6 +16,8 @@ type TablaPagina struct {
 
 // Asigna un marco libre para un proceso
 func asignarMarco(pid int) (int, error) {
+	utils.InfoLog.Info("Buscando marco libre", "pid", pid)
+
 	// Buscar un marco libre
 	for i, libre := range marcosLibres {
 		if libre {
@@ -25,11 +27,12 @@ func asignarMarco(pid int) (int, error) {
 			// Registrar que este marco está asignado al proceso
 			marcosAsignadosPorProceso[pid] = append(marcosAsignadosPorProceso[pid], i)
 
-			utils.InfoLog.Info("Marco asignado", "PID", pid, "marco", i)
+			utils.InfoLog.Info("Marco asignado", "pid", pid, "marco", i)
 			return i, nil
 		}
 	}
 
+	utils.ErrorLog.Error("No hay marcos libres disponibles", "pid", pid)
 	return 0, fmt.Errorf("no hay marcos libres disponibles")
 }
 
@@ -41,27 +44,36 @@ func contarMarcosLibres() int {
 			count++
 		}
 	}
+
+	utils.InfoLog.Info("Marcos libres contados", "marcos_libres", count, "total_marcos", len(marcosLibres))
 	return count
 }
 
 // liberarMemoriaProceso libera todos los marcos asignados a un proceso
 func liberarMemoriaProceso(pid int) error {
+	utils.InfoLog.Info("Liberando memoria del proceso", "pid", pid)
+
 	// Verificar si existe el proceso
 	marcos, existe := marcosAsignadosPorProceso[pid]
 	if !existe {
+		utils.ErrorLog.Error("No existe asignación de memoria", "pid", pid)
 		return fmt.Errorf("no existe asignación de memoria para el proceso %d", pid)
 	}
+
+	utils.InfoLog.Info("Marcos a liberar", "pid", pid, "cantidad_marcos", len(marcos), "marcos", marcos)
 
 	// Marcar como libres todos los marcos asignados al proceso
 	for _, marco := range marcos {
 		marcosLibres[marco] = true
 
-		// Opcional: limpiar la memoria (poner en ceros)
+		// Limpiar la memoria (poner en ceros)
 		inicio := marco * config.PageSize
 		fin := inicio + config.PageSize
 		for i := inicio; i < fin && i < len(memoriaPrincipal); i++ {
 			memoriaPrincipal[i] = 0
 		}
+
+		utils.InfoLog.Info("Marco limpiado", "pid", pid, "marco", marco)
 	}
 
 	// Eliminar la entrada del proceso del mapa de asignaciones
@@ -70,7 +82,7 @@ func liberarMemoriaProceso(pid int) error {
 	// Eliminar la tabla de páginas del proceso
 	delete(tablasPaginas, pid)
 
-	utils.InfoLog.Info("Memoria liberada", "PID", pid, "marcos_liberados", len(marcos))
+	utils.InfoLog.Info("Memoria liberada completamente", "pid", pid, "marcos_liberados", len(marcos))
 
 	return nil
 }

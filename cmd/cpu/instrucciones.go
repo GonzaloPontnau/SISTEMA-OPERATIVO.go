@@ -5,27 +5,24 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/sisoputnfrba/tp-2025-1c-LosCuervosXeneizes/utils"
+	"github.com/GonzaloPontnau/SISTEMA-OPERATIVO.go.git/utils"
 )
 
 // Fetch: Obtener instrucción desde memoria
 func fetch(pid, pc int) string {
-	utils.InfoLog.Info(fmt.Sprintf("## PID: %d - FETCH - Program Counter: %d", pid, pc))
+	utils.InfoLog.Info(fmt.Sprintf("PID: %d - FETCH - PC: %d", pid, pc))
 
-	// Preparar mensaje para memoria
 	params := map[string]interface{}{
 		"pid": pid,
 		"pc":  pc,
 	}
 
-	// Enviar solicitud a memoria
-	respuesta, err := modulo.EnviarMensaje("Memoria", utils.MensajeFetch, "FETCH", params)
+	respuesta, err := memoriaClient.EnviarHTTPMensaje(utils.MensajeFetch, "FETCH", params)
 	if err != nil {
 		utils.ErrorLog.Error("Error al solicitar instrucción a memoria", "error", err)
 		return ""
 	}
 
-	// Extraer instrucción de la respuesta
 	respuestaMap, ok := respuesta.(map[string]interface{})
 	if !ok {
 		utils.ErrorLog.Error("Formato de respuesta incorrecto", "respuesta", fmt.Sprintf("%v", respuesta))
@@ -38,8 +35,7 @@ func fetch(pid, pc int) string {
 		return ""
 	}
 
-	utils.InfoLog.Info("Instrucción recibida de Memoria", "pid", pid, "pc", pc, "instruccion", instruccion)
-
+	utils.InfoLog.Info("Instrucción obtenida", "pid", pid, "pc", pc, "instruccion", instruccion)
 	return instruccion
 }
 
@@ -54,17 +50,21 @@ func decodeAndExecute(pid, pc int, instruccion string) (int, string, map[string]
 	operacion := partes[0]
 	parametros := partes[1:]
 
-	utils.InfoLog.Info(fmt.Sprintf("## PID: %d - Ejecutando: %s - %s", pid, operacion, strings.Join(parametros, " ")))
+	// Construir string de parámetros para el log
+	var argsString string
+	if len(parametros) > 0 {
+		argsString = strings.Join(parametros, " ")
+	}
 
-	// Parámetros para syscall y motivo de retorno
+	utils.InfoLog.Info(fmt.Sprintf("PID: %d - Ejecutando: %s %s", pid, operacion, argsString))
+
 	parametrosSyscall := make(map[string]interface{})
 	motivoRetorno := ""
 	siguientePC := pc
 
-	// Ejecutar según el tipo de instrucción
 	switch operacion {
 	case "NOOP":
-		// No hacer nada, sólo consumir tiempo
+		// No hacer nada, solo consumir tiempo
 
 	case "WRITE":
 		if len(parametros) >= 2 {
@@ -105,6 +105,7 @@ func decodeAndExecute(pid, pc int, instruccion string) (int, string, map[string]
 				break
 			}
 			siguientePC = nuevoPC
+			utils.InfoLog.Info("GOTO ejecutado", "pid", pid, "nuevo_pc", nuevoPC)
 		} else {
 			utils.ErrorLog.Error("GOTO: parámetros insuficientes", "parametros", parametros)
 			motivoRetorno = "ERROR"
@@ -122,6 +123,7 @@ func decodeAndExecute(pid, pc int, instruccion string) (int, string, map[string]
 			parametrosSyscall["dispositivo"] = dispositivo
 			parametrosSyscall["tiempo"] = tiempo
 			motivoRetorno = "SYSCALL_IO"
+			utils.InfoLog.Info("IO solicitado", "pid", pid, "dispositivo", dispositivo, "tiempo", tiempo)
 		} else {
 			utils.ErrorLog.Error("IO: parámetros insuficientes", "parametros", parametros)
 			motivoRetorno = "ERROR"
@@ -139,6 +141,7 @@ func decodeAndExecute(pid, pc int, instruccion string) (int, string, map[string]
 			parametrosSyscall["archivo"] = archivo
 			parametrosSyscall["tamano"] = tamano
 			motivoRetorno = "SYSCALL_INIT_PROC"
+			utils.InfoLog.Info("INIT_PROC solicitado", "pid", pid, "archivo", archivo, "tamano", tamano)
 		} else {
 			utils.ErrorLog.Error("INIT_PROC: parámetros insuficientes", "parametros", parametros)
 			motivoRetorno = "ERROR"
@@ -146,9 +149,11 @@ func decodeAndExecute(pid, pc int, instruccion string) (int, string, map[string]
 
 	case "DUMP_MEMORY":
 		motivoRetorno = "SYSCALL_DUMP_MEMORY"
+		utils.InfoLog.Info("DUMP_MEMORY solicitado", "pid", pid)
 
 	case "EXIT":
 		motivoRetorno = "EXIT"
+		utils.InfoLog.Info("EXIT ejecutado", "pid", pid)
 
 	default:
 		utils.ErrorLog.Error("Instrucción desconocida", "operacion", operacion)

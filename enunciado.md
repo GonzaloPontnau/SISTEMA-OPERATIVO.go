@@ -484,32 +484,3 @@ Administra lectura/escritura en memoria y swap.
   "scripts_path": "/home/utnso/scripts/"
 }
 ```
-
-
----
-
-## Descripción de las entregas
-
-### Check de Control Obligatorio 3: CPU Completa y Memoria
-Fecha: 21/06/2025
-
-#### Objetivos:
-*   Módulo Kernel:
-    *   Planificación de corto y largo plazo completa.
-*   Módulo CPU: Completo
-*   Módulo Memoria:
-    *   Esquema de Memoria principal completo
-    *   Administración de espacio libre en memoria principal
-
-#### Carga de trabajo estimada:
-*   Módulo Kernel: 30%
-*   Módulo CPU: 30%
-*   Módulo Memoria: 40%
-
-### Entregas Finales
-Fechas: 12/07/2025, 19/07/2025, 02/08/2025
-
-#### Objetivos:
-*   Finalizar el desarrollo de todos los procesos.
-*   Probar de manera intensiva el TP en un entorno distribuido.
-*   Todos los componentes del TP ejecutan los requerimientos de forma integral.

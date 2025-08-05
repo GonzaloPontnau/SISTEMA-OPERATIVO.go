@@ -3,7 +3,7 @@ package main
 import (
 	"sync"
 
-	"github.com/sisoputnfrba/tp-2025-1c-LosCuervosXeneizes/utils"
+	"github.com/GonzaloPontnau/SISTEMA-OPERATIVO.go.git/utils"
 )
 
 // Estructuras para ciclo de CPU
@@ -16,12 +16,12 @@ type TLBEntry struct {
 }
 
 type CacheEntry struct {
-	PageNumber int
+	PageNumber  int
 	FrameNumber int
-	Content    string
-	PID        int
-	Modified   bool // Para algoritmo CLOCK-M
-	Referenced bool // Para algoritmo CLOCK
+	Content     string
+	PID         int
+	Modified    bool // Para algoritmo CLOCK-M
+	Referenced  bool // Para algoritmo CLOCK
 }
 
 // Variables globales para CPU
@@ -42,21 +42,21 @@ func inicializarCPU() {
 	err := cargarConfigMemoria()
 	if err != nil {
 		utils.ErrorLog.Error("Error al cargar configuración de memoria", "error", err)
-		// Usar valores por defecto para poder continuar
-		tamanoPagina = 64    // Default del ejemplo
-		entradasPorTabla = 4 // Default del ejemplo
-		numeroDeNiveles = 5  // Default del ejemplo
+		// Usar valores por defecto
+		tamanoPagina = 64
+		entradasPorTabla = 4
+		numeroDeNiveles = 5
 		utils.InfoLog.Info("Usando configuración por defecto",
 			"page_size", tamanoPagina,
 			"entries_per_page", entradasPorTabla,
 			"number_of_levels", numeroDeNiveles)
 	}
 
-	// Inicializar TLB
+	// Inicializar TLB y Cache
 	inicializarTLB()
-
-	// Inicializar Cache
 	inicializarCache()
+
+	utils.InfoLog.Info("CPU inicializada correctamente")
 }
 
 // Inicializar TLB según configuración
@@ -97,7 +97,6 @@ func inicializarCache() {
 
 // Implementar ciclo de instrucción completo
 func ejecutarCiclo(pid, pc int) (int, string, map[string]interface{}) {
-	// Marcar proceso en ejecución
 	procesoEnEjecucion = pid
 
 	// Fetch
@@ -111,7 +110,6 @@ func ejecutarCiclo(pid, pc int) (int, string, map[string]interface{}) {
 
 	// Check Interrupt
 	if checkInterrupt(pid) {
-		// Al ser interrumpido, limpiar estructuras y devolver el proceso
 		limpiarEstructurasPorPID(pid)
 		procesoEnEjecucion = -1
 		return siguientePC, "INTERRUPTED", nil
@@ -136,7 +134,7 @@ func checkInterrupt(pid int) bool {
 	defer mutex.Unlock()
 
 	if interrupcionPendiente && pidInterrumpido == pid {
-		utils.InfoLog.Info("## Llega interrupción al puerto Interrupt")
+		utils.InfoLog.Info("Interrupción recibida al puerto Interrupt")
 		interrupcionPendiente = false
 		pidInterrumpido = -1
 		return true
@@ -164,7 +162,6 @@ func limpiarEstructurasPorPID(pid int) {
 	for i := range cacheEntries {
 		if cacheEntries[i].PID == pid {
 			if cacheEntries[i].Modified {
-				// Actualizar en memoria antes de limpiar
 				actualizarMemoria(pid, cacheEntries[i].PageNumber)
 			}
 			cacheEntries[i] = CacheEntry{

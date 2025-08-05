@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/sisoputnfrba/tp-2025-1c-LosCuervosXeneizes/utils"
+	"github.com/GonzaloPontnau/SISTEMA-OPERATIVO.go.git/utils"
 )
 
 const (
@@ -25,7 +25,7 @@ type PCB struct {
 	PC                        int
 	EstimacionSiguienteRafaga float64
 
-	// Timestamps optimizados
+	// Timestamps
 	HoraCreacion     time.Time
 	HoraListo        time.Time
 	HoraEjecucion    time.Time
@@ -38,13 +38,21 @@ type PCB struct {
 	TotalEjecuciones     int
 	TotalTiempoEjecucion float64
 	MotivoBloqueo        string
+
+	// Tracking de estados para métricas
+	TotalReady        int
+	TotalTiempoReady  float64
+	InicioUltimoReady time.Time
+
+	// Flag para distinguir si el proceso está realmente en SWAP o ya fue cargado por IO
+	EnSwap bool
 }
 
 // NuevoPCB simplificado
 func NuevoPCB(pid int, tamanio int) *PCB {
 	horaActual := time.Now()
 	finalPID := pid
-	if pid < 0 { // Si es negativo, generar uno nuevo
+	if pid < 0 {
 		finalPID = GenerarNuevoPID()
 	}
 
@@ -60,11 +68,14 @@ func NuevoPCB(pid int, tamanio int) *PCB {
 		PC:                        0,
 		EstimacionSiguienteRafaga: estimacionInicial,
 		HoraCreacion:              horaActual,
+		EnSwap:                    false, // Los procesos nuevos no están en SWAP
 	}
 
 	mapaMutex.Lock()
 	mapaPCBs[pcb.PID] = pcb
 	mapaMutex.Unlock()
+
+	utils.InfoLog.Info(fmt.Sprintf("(%d) - Se crea el proceso - Estado: %s", pcb.PID, pcb.Estado))
 
 	return pcb
 }
@@ -77,6 +88,11 @@ func (pcb *PCB) CambiarEstado(nuevoEstado string) {
 
 	estadoAnterior := pcb.Estado
 	horaActual := time.Now()
+
+	if estadoAnterior == EstadoReady && !pcb.InicioUltimoReady.IsZero() {
+		tiempoEnReady := horaActual.Sub(pcb.InicioUltimoReady).Seconds()
+		pcb.TotalTiempoReady += tiempoEnReady
+	}
 
 	// Manejar transiciones de ejecución
 	switch {
@@ -93,10 +109,12 @@ func (pcb *PCB) CambiarEstado(nuevoEstado string) {
 		}
 	}
 
-	// Actualizar timestamps
+	// Actualizar timestamps y contadores
 	switch nuevoEstado {
 	case EstadoReady:
 		pcb.HoraListo = horaActual
+		pcb.InicioUltimoReady = horaActual
+		pcb.TotalReady++
 	case EstadoBlocked:
 		pcb.HoraBloqueo = horaActual
 	case EstadoExit:
@@ -104,7 +122,7 @@ func (pcb *PCB) CambiarEstado(nuevoEstado string) {
 	}
 
 	pcb.Estado = nuevoEstado
-	utils.InfoLog.Info(fmt.Sprintf("## (%d) Pasa del estado %s al estado %s", pcb.PID, estadoAnterior, nuevoEstado))
+	utils.InfoLog.Info(fmt.Sprintf("(%d) - Pasa del estado %s al estado %s", pcb.PID, estadoAnterior, nuevoEstado))
 }
 
 // actualizarEstimacion simplificada
@@ -128,15 +146,18 @@ func (pcb *PCB) String() string {
 
 // CalcularMetricas optimizado
 func (pcb *PCB) CalcularMetricas() {
+	// Si el proceso está saliendo de READY al finalizar, acumular el último tiempo
+	if pcb.Estado == EstadoReady && !pcb.InicioUltimoReady.IsZero() {
+		tiempoEnReady := time.Now().Sub(pcb.InicioUltimoReady).Seconds()
+		pcb.TotalTiempoReady += tiempoEnReady
+	}
+
 	tiempoNew := 0.0
 	if pcb.HoraListo.After(pcb.HoraCreacion) {
 		tiempoNew = pcb.HoraListo.Sub(pcb.HoraCreacion).Seconds()
 	}
 
-	tiempoReady := 0.0
-	if pcb.HoraEjecucion.After(pcb.HoraListo) {
-		tiempoReady = pcb.HoraEjecucion.Sub(pcb.HoraListo).Seconds()
-	}
+	tiempoReady := pcb.TotalTiempoReady
 
 	tiempoExec := pcb.TotalTiempoEjecucion / 1000.0
 
@@ -145,6 +166,6 @@ func (pcb *PCB) CalcularMetricas() {
 		tiempoBlocked = pcb.HoraFinalizacion.Sub(pcb.HoraBloqueo).Seconds()
 	}
 
-	utils.InfoLog.Info(fmt.Sprintf("## (%d) - Métricas: NEW (1) (%.2f), READY (1) (%.2f), EXEC (%d) (%.2f), BLOCKED (1) (%.2f)",
-		pcb.PID, tiempoNew, tiempoReady, pcb.TotalEjecuciones, tiempoExec, tiempoBlocked))
+	utils.InfoLog.Info(fmt.Sprintf("(%d) - Métricas de estado: NEW (%d)(%.2f), READY (%d)(%.2f), EXEC (%d)(%.2f), BLOCKED (%d)(%.2f)",
+		pcb.PID, 1, tiempoNew, pcb.TotalReady, tiempoReady, pcb.TotalEjecuciones, tiempoExec, 1, tiempoBlocked))
 }

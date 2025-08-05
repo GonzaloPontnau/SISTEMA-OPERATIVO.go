@@ -1,3 +1,3 @@
-module github.com/sisoputnfrba/tp-2025-1c-LosCuervosXeneizes
+module github.com/GonzaloPontnau/SISTEMA-OPERATIVO.go.git
 
-go 1.23.1
+go 1.24.0

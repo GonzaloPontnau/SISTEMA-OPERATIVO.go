@@ -40,6 +40,7 @@ type MetricasProceso struct {
 // Variables globales
 var memoriaPrincipal []byte
 var instruccionesPorProceso map[int][]string
+var instruccionesMutex sync.RWMutex
 var tablasPaginas map[int]*TablaPaginas     // Mapa de PID a tabla de páginas de primer nivel
 var marcosLibres []bool                     // true = libre, false = ocupado
 var marcosAsignadosPorProceso map[int][]int // PID -> lista de marcos asignados

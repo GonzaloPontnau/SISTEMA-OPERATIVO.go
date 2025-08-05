@@ -2,21 +2,28 @@ package main
 
 import (
 	"fmt"
+	"time"
 
-	"github.com/sisoputnfrba/tp-2025-1c-LosCuervosXeneizes/utils"
+	"github.com/GonzaloPontnau/SISTEMA-OPERATIVO.go.git/utils"
 )
 
 // Registrar todos los handlers de mensajes
 func RegistrarHandlers() {
-	modulo.RegistrarHandler(fmt.Sprintf("%d", utils.MensajeHandshake), "handshake", utils.ManejarHandshake)
+	modulo.RegistrarHandler(fmt.Sprintf("%d", utils.MensajeHandshake), "handshake", manejarHandshake)
 	modulo.RegistrarHandler(fmt.Sprintf("%d", utils.MensajeOperacion), "EJECUTAR_PROCESO", manejarEjecutar)
 	modulo.RegistrarHandler(fmt.Sprintf("%d", utils.MensajeEjecutar), "default", manejarEjecutar)
 	modulo.RegistrarHandler(fmt.Sprintf("%d", utils.MensajeInterrupcion), "INTERRUPCION", manejarInterrupcion)
+
+	utils.InfoLog.Info("Handlers registrados correctamente")
+}
+
+func manejarHandshake(msg *utils.Mensaje) (interface{}, error) {
+	utils.InfoLog.Info("Handshake recibido", "origen", msg.Origen)
+	return map[string]interface{}{"status": "OK"}, nil
 }
 
 // Handler para ejecutar instrucción
 func manejarEjecutar(msg *utils.Mensaje) (interface{}, error) {
-	// Extraer PID y PC del mensaje
 	datos := msg.Datos.(map[string]interface{})
 	pid, okPid := datos["pid"].(float64)
 	pc, okPc := datos["pc"].(float64)
@@ -31,7 +38,7 @@ func manejarEjecutar(msg *utils.Mensaje) (interface{}, error) {
 	pidInt := int(pid)
 	pcInt := int(pc)
 
-	utils.InfoLog.Info("Recibido proceso para ejecutar", "pid", pidInt, "pc", pcInt)
+	utils.InfoLog.Info("Proceso recibido para ejecutar", "pid", pidInt, "pc", pcInt)
 
 	// Ejecutar ciclo de instrucción
 	siguientePC, motivo, parametrosSyscall := ejecutarCiclo(pidInt, pcInt)
@@ -42,7 +49,7 @@ func manejarEjecutar(msg *utils.Mensaje) (interface{}, error) {
 		"pc":  siguientePC,
 	}
 
-	// Si hay un motivo de retorno (syscall, interrupción, error), agregarlo
+	// Agregar motivo de retorno si existe
 	if motivo != "" {
 		respuesta["motivo_retorno"] = motivo
 		if parametrosSyscall != nil {
@@ -74,7 +81,25 @@ func manejarInterrupcion(msg *utils.Mensaje) (interface{}, error) {
 	pidInterrumpido = pidInt
 	mutex.Unlock()
 
-	utils.InfoLog.Info("Interrupción recibida", "pid", pidInt)
+	utils.InfoLog.Info("Interrupción configurada", "pid", pidInt)
 
 	return map[string]interface{}{"ok": true}, nil
+}
+
+func conectarConReintentos(c *utils.HTTPClient, nombreModulo string, datosHandshake map[string]interface{}) {
+	utils.InfoLog.Info("Iniciando conexión", "destino", nombreModulo)
+
+	for i := 1; ; i++ {
+		_, err := c.EnviarHTTPMensaje(utils.MensajeHandshake, "handshake", datosHandshake)
+		if err == nil {
+			utils.InfoLog.Info("Conexión establecida", "destino", nombreModulo)
+			return
+		}
+
+		utils.InfoLog.Warn("Reintentando conexión",
+			"destino", nombreModulo,
+			"intento", i,
+			"próximo_en", "2s")
+		time.Sleep(2 * time.Second)
+	}
 }
